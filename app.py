@@ -4,12 +4,14 @@ from flask import Flask, jsonify
 from threading import Thread
 import datetime
 import obd
+from obd import utils
 from gps import *
 
 DATETIME_FORMAT = "%Y%m%d-%H:%M:%S.%f"
 DEVICE_TIME_LABEL = 'DEVICE_TIME'
 RECORD_DIRECTORY = 'recordings'
 RECORD_DIRECTORY_LOCATION = os.path.join('.', RECORD_DIRECTORY)
+OBD_INTERFACE = '/dev/ttyUSB0'
 
 
 class DataManager(Thread):
@@ -217,54 +219,51 @@ class DataManager(Thread):
 
     def run(self):
         self.running = False
-        connection_complete = False
+        print('START NEW OBD CONNECTION')
+        self.obd_connection = obd.Async(OBD_INTERFACE)
+        wait_count = 1
 
-        while not connection_complete:
-            print('START NEW OBD CONNECTION')
-            self.obd_connection = obd.Async()
+        while self.obd_connection.status() == utils.OBDStatus.NOT_CONNECTED:
+            print('OBD NOT CONNECTED')
+            if wait_count > 60:
+                self.obd_connection.close()
+                print('FAILED TO CREATE OBD CONNECTION')
+                return
+            print('RETRY CONNECTION N°' + str(wait_count))
+            wait_count = wait_count + 1
+            time.sleep(1)
 
-            wait_count = 0
+            if not self.obd_connection.is_connected():
+                print('CLOSE PREVIOUS OBD CONNECTION')
+                self.obd_connection.close()
+                time.sleep(4)
+                print('RETRY STARTING NEW OBD CONNECTION')
+                self.obd_connection = obd.Async(OBD_INTERFACE)
+                time.sleep(2)
 
-            while not self.obd_connection.is_connected():
-                if wait_count > 60:
-                    break
-                print('WAITING FOR OBD CONNECTION' + str(wait_count))
-                wait_count = wait_count + 1
-                time.sleep(1)
-
-                if not self.obd_connection.is_connected():
-                    connection_complete = False
-                    print('CLOSE PREVIOUS OBD CONNECTION')
-                    self.obd_connection.close()
-                    time.sleep(4)
-                    print('RETRY STARTING NEW OBD CONNECTION')
-                    self.obd_connection = obd.Async()
-                    time.sleep(2)
-                else:
-                    print('TESTING OBD CONNECTION')
-                    print(str(self.obd_connection.supported_commands))
-                    connection_complete = True
-                    for status in self.status_list:
-                        print('TESTING OBD STATUS: ' + str(status))
-                        status_supported = self.obd_connection.supports(status)
-                        print(str(status_supported))
-                        if not status_supported:
-                            print('UNSUPPORTED OBD COMMAND: ' + str(status))
-                            print(str(self.obd_connection.query(status, force=True).value))
-                            self.status_list.remove(status)
-                    for command in self.command_list:
-                        print('TESTING OBD COMMAND: ' + str(command))
-                        command_supported = self.obd_connection.supports(command)
-                        print(str(command_supported))
-                        if not command_supported:
-                            print('UNSUPPORTED OBD COMMAND: ' + str(command))
-                            print(str(self.obd_connection.query(command, force=True).value))
-                            self.command_list.remove(command)
-                            # connection_complete = False
-                            # print('CLOSE PREVIOUS OBD CONNECTION')
-                            # self.obd_connection.close()
-                            # time.sleep(4)
-                            # break
+        print('TESTING OBD CONNECTION')
+        print(str(self.obd_connection.supported_commands))
+        for status in self.status_list:
+            print('TESTING OBD STATUS: ' + str(status))
+            status_supported = self.obd_connection.supports(status)
+            print(str(status_supported))
+            if not status_supported:
+                print('UNSUPPORTED OBD COMMAND: ' + str(status))
+                print(str(self.obd_connection.query(status, force=True).value))
+                self.status_list.remove(status)
+        for command in self.command_list:
+            print('TESTING OBD COMMAND: ' + str(command))
+            command_supported = self.obd_connection.supports(command)
+            print(str(command_supported))
+            if not command_supported:
+                print('UNSUPPORTED OBD COMMAND: ' + str(command))
+                print(str(self.obd_connection.query(command, force=True).value))
+                self.command_list.remove(command)
+                # connection_complete = False
+                # print('CLOSE PREVIOUS OBD CONNECTION')
+                # self.obd_connection.close()
+                # time.sleep(4)
+                # break
         if self.command_list.__len__() < 1:
             print('NO OBD COMMAND SUPPORTED')
             print('CLOSE PREVIOUS OBD CONNECTION')
