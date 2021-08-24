@@ -1,17 +1,21 @@
 import os.path
-
 from flask import Flask, jsonify
 from threading import Thread
 import datetime
 import obd
 from obd import utils
 from gps import *
+import configparser
 
+config = configparser.ConfigParser()
+config.read('config.ini')
 DATETIME_FORMAT = "%Y%m%d-%H:%M:%S.%f"
 DEVICE_TIME_LABEL = 'DEVICE_TIME'
 RECORD_DIRECTORY = 'recordings'
 RECORD_DIRECTORY_LOCATION = os.path.join('.', RECORD_DIRECTORY)
-OBD_INTERFACE = '/dev/ttyUSB0'
+OBD_INTERFACE = config.get('DEFAULT', 'OBD_INTERFACE', fallback=None)
+SERVER_LOCATION = config.get('DEFAULT', 'SERVER_LOCATION', fallback=None)
+FILE_RECORDING = config['DEFAULT'].getboolean('FILE_RECORDING', fallback=False)
 
 
 class DataManager(Thread):
@@ -243,14 +247,17 @@ class DataManager(Thread):
 
         print('TESTING OBD CONNECTION')
         print(str(self.obd_connection.supported_commands))
+
         for status in self.status_list:
             print('TESTING OBD STATUS: ' + str(status))
             status_supported = self.obd_connection.supports(status)
             print(str(status_supported))
+
             if not status_supported:
                 print('UNSUPPORTED OBD COMMAND: ' + str(status))
                 print(str(self.obd_connection.query(status, force=True).value))
                 self.status_list.remove(status)
+
         for command in self.command_list:
             print('TESTING OBD COMMAND: ' + str(command))
             command_supported = self.obd_connection.supports(command)
@@ -271,21 +278,29 @@ class DataManager(Thread):
         else:
             for command in self.command_list:
                 self.obd_connection.watch(command)  # , callback=self.value_callback)
+
             for status in self.status_list:
                 self.obd_connection.watch(status)
+
             self.obd_connection.start()
             print('CONNECTED TO ECU')
             print('START MONITORING ECU DATA')
             self.running = True
-            if RECORD_DIRECTORY not in os.listdir('.'):
-                os.mkdir(RECORD_DIRECTORY_LOCATION)
-            filename = os.path.join(RECORD_DIRECTORY_LOCATION, self.get_device_time_string() + 'csv')
-            with open(filename, 'a') as file:
-                file.write(self.get_command_record(header=True))
-            while self.running:
+
+            if FILE_RECORDING:
+                if RECORD_DIRECTORY not in os.listdir('.'):
+                    os.mkdir(RECORD_DIRECTORY_LOCATION)
+                filename = os.path.join(RECORD_DIRECTORY_LOCATION, self.get_device_time_string() + 'csv')
+
                 with open(filename, 'a') as file:
-                    file.write(self.get_command_record(header=False))
-                time.sleep(0.5)
+                    file.write(self.get_command_record(header=True))
+                    while self.running:
+                        file.write(self.get_command_record(header=False))
+                        time.sleep(0.5)
+
+            else:
+                while self.running:
+                    time.sleep(0.5)
 
             self.obd_connection.stop()
             self.obd_connection.unwatch_all()
