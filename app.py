@@ -283,25 +283,29 @@ class DataManager(Thread):
 
     def query_command(self, string_command):
         command = self.string_to_command_dict.get(string_command)
-        if command is None or not self.command_list.__contains__(command):
+        if command is None or not self.command_list.__contains__(command) or not self.running:
             return None
-
         return self.obd_connection.query(command)
 
     def query_status(self, string_status):
         status = self.string_to_status_dict.get(string_status)
-        if status is None:
+        if status is None or not self.running:
             return None
-
         return self.obd_connection.query(status)
 
     def query_dtc(self):
+        if not self.running:
+            return None
         return self.obd_connection.query(obd.commands.GET_DTC)
 
     def query_position(self):
+        if not self.running:
+            return None
         return self.gpsd.fix
 
     def clear_dtc(self):
+        if not self.running:
+            return None
         return self.obd_connection.query(obd.commands.CLEAR_DTC)
 
 
