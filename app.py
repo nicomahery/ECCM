@@ -1,7 +1,15 @@
+import os.path
+
 from flask import Flask, jsonify
 from threading import Thread
+import datetime
 import obd
 from gps import *
+
+DATETIME_FORMAT = "%Y%m%d-%H:%M:%S.%f"
+DEVICE_TIME_LABEL = 'DEVICE_TIME'
+RECORD_DIRECTORY = 'recordings'
+RECORD_DIRECTORY_LOCATION = os.path.join('.', RECORD_DIRECTORY)
 
 
 class DataManager(Thread):
@@ -263,15 +271,22 @@ class DataManager(Thread):
             self.obd_connection.close()
         else:
             for command in self.command_list:
-                self.obd_connection.watch(command)#, callback=self.value_callback)
+                self.obd_connection.watch(command)  # , callback=self.value_callback)
             for status in self.status_list:
                 self.obd_connection.watch(status)
             self.obd_connection.start()
             print('CONNECTED TO ECU')
             print('START MONITORING ECU DATA')
             self.running = True
+            if RECORD_DIRECTORY not in os.listdir('.'):
+                os.mkdir(RECORD_DIRECTORY_LOCATION)
+            filename = os.path.join(RECORD_DIRECTORY_LOCATION, self.get_device_time_string() + 'csv')
+            with open(filename, 'a') as file:
+                file.write(self.get_command_record(header=True))
             while self.running:
-                time.sleep(2)
+                with open(filename, 'a') as file:
+                    file.write(self.get_command_record(header=False))
+                time.sleep(0.5)
 
             self.obd_connection.stop()
             self.obd_connection.unwatch_all()
@@ -307,6 +322,25 @@ class DataManager(Thread):
         if not self.running:
             return None
         return self.obd_connection.query(obd.commands.CLEAR_DTC)
+
+    def get_command_record(self, header=False):
+        if not self.running:
+            return None
+        ret = ''
+        if header:
+            for command in self.command_list:
+                ret = f'{DEVICE_TIME_LABEL},'
+                ret += f'{command},'
+            return ret
+        else:
+            for command in self.command_list:
+                ret = f'{self.get_device_time_string(),}'
+                ret += f'{self.obd_connection.query(command).value},'
+            return ret
+
+    @staticmethod
+    def get_device_time_string():
+        return str(datetime.datetime.now().strftime(DATETIME_FORMAT))
 
 
 app = Flask(__name__)
