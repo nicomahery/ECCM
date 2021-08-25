@@ -9,7 +9,7 @@ import configparser
 
 config = configparser.ConfigParser()
 config.read('config.ini')
-DATETIME_FORMAT = "%Y%m%d-%H:%M:%S.%f"
+DATETIME_FORMAT = "%Y%m%d_%H%M%S-%f"
 DEVICE_TIME_LABEL = 'DEVICE_TIME'
 RECORD_DIRECTORY = 'recordings'
 RECORD_DIRECTORY_LOCATION = os.path.join('.', RECORD_DIRECTORY)
@@ -225,6 +225,7 @@ class DataManager(Thread):
         self.running = False
         print('START NEW OBD CONNECTION')
         self.obd_connection = obd.Async(OBD_INTERFACE)
+        time.sleep(2)
         wait_count = 1
 
         while self.obd_connection.status() == utils.OBDStatus.NOT_CONNECTED:
@@ -240,7 +241,7 @@ class DataManager(Thread):
             if not self.obd_connection.is_connected():
                 print('CLOSE PREVIOUS OBD CONNECTION')
                 self.obd_connection.close()
-                time.sleep(4)
+                time.sleep(7)
                 print('RETRY STARTING NEW OBD CONNECTION')
                 self.obd_connection = obd.Async(OBD_INTERFACE)
                 time.sleep(2)
@@ -283,14 +284,15 @@ class DataManager(Thread):
                 self.obd_connection.watch(status)
 
             self.obd_connection.start()
-            print('CONNECTED TO ECU')
+            print(f'CONNECTED TO ECU')
+            print(f'NUMBER OF COMMAND MONITORED:{self.command_list.__len__()}')
             print('START MONITORING ECU DATA')
             self.running = True
 
             if FILE_RECORDING:
                 if RECORD_DIRECTORY not in os.listdir('.'):
                     os.mkdir(RECORD_DIRECTORY_LOCATION)
-                filename = os.path.join(RECORD_DIRECTORY_LOCATION, self.get_device_time_string() + 'csv')
+                filename = os.path.join(RECORD_DIRECTORY_LOCATION, self.get_device_time_string() + '.csv')
 
                 with open(filename, 'a') as file:
                     file.write(self.get_command_record(header=True))
@@ -342,15 +344,15 @@ class DataManager(Thread):
             return None
         ret = ''
         if header:
+            ret = f'{DEVICE_TIME_LABEL},'
             for command in self.command_list:
-                ret = f'{DEVICE_TIME_LABEL},'
-                ret += f'{command},'
-            return ret
+                ret += f',{command}'
+            return ret + '\n'
         else:
+            ret = f'{self.get_device_time_string(),}'
             for command in self.command_list:
-                ret = f'{self.get_device_time_string(),}'
-                ret += f'{self.obd_connection.query(command).value},'
-            return ret
+                ret += f',{self.obd_connection.query(command).value}'
+            return ret + '\n'
 
     @staticmethod
     def get_device_time_string():
