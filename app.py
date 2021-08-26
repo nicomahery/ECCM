@@ -9,13 +9,18 @@ import configparser
 
 config = configparser.ConfigParser()
 config.read('config.ini')
-DATETIME_FORMAT = "%Y%m%d_%H%M%S-%f"
+DATETIME_FORMAT = "%Y%m%d%H%M%S%f"
 DEVICE_TIME_LABEL = 'DEVICE_TIME'
 RECORD_DIRECTORY = 'recordings'
 RECORD_DIRECTORY_LOCATION = os.path.join('.', RECORD_DIRECTORY)
 OBD_INTERFACE = config.get('DEFAULT', 'OBD_INTERFACE', fallback=None)
 SERVER_LOCATION = config.get('DEFAULT', 'SERVER_LOCATION', fallback=None)
 FILE_RECORDING = config['DEFAULT'].getboolean('FILE_RECORDING', fallback=False)
+MONITORING_FILE_EXTENSION = config.get('DEFAULT', 'MONITORING_FILE_EXTENSION', fallback='.tsv')
+MONITORING_FILE_SEPARATION_CHARACTER_FALLBACK = '\t' if MONITORING_FILE_EXTENSION == '.tsv' else ',' \
+    if MONITORING_FILE_EXTENSION == '.csv' else '|'
+MONITORING_FILE_SEPARATION_CHARACTER = config.get('DEFAULT', 'MONITORING_FILE_SEPARATION_CHARACTER',
+                                                  fallback=MONITORING_FILE_SEPARATION_CHARACTER_FALLBACK)
 
 
 class DataManager(Thread):
@@ -346,17 +351,17 @@ class DataManager(Thread):
         if header:
             ret = f'{DEVICE_TIME_LABEL},'
             for command in self.command_list:
-                ret += f',{command}'
+                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{command}'
             return ret + '\n'
         else:
             ret = f'{self.get_device_time_string(),}'
             for command in self.command_list:
-                ret += f',{self.obd_connection.query(command).value}'
+                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.obd_connection.query(command).value}'
             return ret + '\n'
 
     @staticmethod
     def get_device_time_string():
-        return str(datetime.datetime.now().strftime(DATETIME_FORMAT))
+        return datetime.datetime.now().strftime(DATETIME_FORMAT)
 
 
 app = Flask(__name__)
