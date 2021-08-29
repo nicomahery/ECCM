@@ -349,7 +349,7 @@ class DataManager(Thread):
             return None
         ret = ''
         if header:
-            ret = f'{DEVICE_TIME_LABEL},'
+            ret = f'{DEVICE_TIME_LABEL}'
             for command in self.command_list:
                 ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{command}'
             return ret + '\n'
