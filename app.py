@@ -28,8 +28,8 @@ MONITORING_FILE_SEPARATION_CHARACTER_FALLBACK = '\t' if MONITORING_FILE_EXTENSIO
 MONITORING_FILE_SEPARATION_CHARACTER = config.get('DEFAULT', 'MONITORING_FILE_SEPARATION_CHARACTER',
                                                   fallback=MONITORING_FILE_SEPARATION_CHARACTER_FALLBACK)
 S3_SERVER_ENDPOINT = config.get('DEFAULT', 'S3_SERVER_ENDPOINT', fallback=None)
-S3_SERVER_AK = config.get('DEFAULT', 'S3_BUCKET_AK', fallback=None)
-S3_SERVER_SK = config.get('DEFAULT', 'S3_BUCKET_SK', fallback=None)
+S3_SERVER_AK = config.get('DEFAULT', 'S3_SERVER_AK', fallback=None)
+S3_SERVER_SK = config.get('DEFAULT', 'S3_SERVER_SK', fallback=None)
 S3_SERVER_BUCKET = config.get('DEFAULT', 'S3_SERVER_BUCKET', fallback=None)
 S3_SERVER_REGION = config.get('DEFAULT', 'S3_SERVER_REGION', fallback=None)
 
@@ -45,11 +45,15 @@ class FileSyncManager(Thread):
     def run(self):
         self.running = True
         client = minio.Minio(S3_SERVER_ENDPOINT, S3_SERVER_AK, S3_SERVER_SK, S3_SERVER_REGION)
+        print('FILE SYNC MANAGER STARTED')
         for filename in os.listdir(RECORD_DIRECTORY_LOCATION):
             if filename.endswith(MONITORING_FILE_EXTENSION) and filename != self.excluded_sync_filename:
+                print(f'SEND TO S3_SERVER_BUCKET, {S3_ROOT_DIRECTORY}/{CAR_IDENTIFIER}/{filename}, ' +
+                      f'os.path.join({RECORD_DIRECTORY_LOCATION}, {filename})')
                 client.fput_object(S3_SERVER_BUCKET, f'{S3_ROOT_DIRECTORY}/{CAR_IDENTIFIER}/{filename}',
                                    os.path.join(RECORD_DIRECTORY_LOCATION, filename))
                 os.remove(os.path.join(RECORD_DIRECTORY_LOCATION, filename))
+                print(f'FILE {filename} SYNCED TO S3')
         self.running = False
 
 
