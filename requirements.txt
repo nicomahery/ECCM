@@ -2,3 +2,4 @@ Flask
 obd
 gps
 configparser
+minio
