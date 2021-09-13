@@ -44,7 +44,8 @@ class FileSyncManager(Thread):
 
     def run(self):
         self.running = True
-        client = minio.Minio(S3_SERVER_ENDPOINT, S3_SERVER_AK, S3_SERVER_SK, S3_SERVER_REGION)
+        client = minio.Minio(endpoint=S3_SERVER_ENDPOINT, access_key=S3_SERVER_AK, secret_key=S3_SERVER_SK,
+                             region=S3_SERVER_REGION)
         print('FILE SYNC MANAGER STARTED')
         for filename in os.listdir(RECORD_DIRECTORY_LOCATION):
             if filename.endswith(MONITORING_FILE_EXTENSION) and filename != self.excluded_sync_filename:
