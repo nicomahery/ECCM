@@ -49,12 +49,11 @@ class FileSyncManager(Thread):
         print('FILE SYNC MANAGER STARTED')
         for filename in os.listdir(RECORD_DIRECTORY_LOCATION):
             if filename.endswith(MONITORING_FILE_EXTENSION) and filename != self.excluded_sync_filename:
-                print(f'SEND TO S3_SERVER_BUCKET, {S3_ROOT_DIRECTORY}/{CAR_IDENTIFIER}/{filename}, ' +
-                      f'os.path.join({RECORD_DIRECTORY_LOCATION}, {filename})')
                 client.fput_object(S3_SERVER_BUCKET, f'{S3_ROOT_DIRECTORY}/{CAR_IDENTIFIER}/{filename}',
                                    os.path.join(RECORD_DIRECTORY_LOCATION, filename))
                 os.remove(os.path.join(RECORD_DIRECTORY_LOCATION, filename))
                 print(f'FILE {filename} SYNCED TO S3')
+        print('FILE SYNC MANAGER ENDED')
         self.running = False
 
 
@@ -267,6 +266,11 @@ class DataManager(Thread):
         self.obd_connection = obd.Async(OBD_INTERFACE)
         time.sleep(2)
         wait_count = 1
+        filename = os.path.join(RECORD_DIRECTORY_LOCATION, self.get_device_time_string() + MONITORING_FILE_EXTENSION)
+        if S3_SERVER_ENDPOINT is not None and S3_SERVER_AK is not None and S3_SERVER_SK is not None \
+                and S3_SERVER_BUCKET is not None and S3_SERVER_REGION is not None:
+            file_sync_manager = FileSyncManager(excluded_sync_filename=filename)
+            file_sync_manager.start()
 
         while self.obd_connection.status() == utils.OBDStatus.NOT_CONNECTED:
             print('OBD NOT CONNECTED')
@@ -330,16 +334,8 @@ class DataManager(Thread):
             self.running = True
 
             if FILE_RECORDING:
-                filename = os.path.join(RECORD_DIRECTORY_LOCATION, self.get_device_time_string()
-                                        + MONITORING_FILE_EXTENSION)
-
                 if RECORD_DIRECTORY not in os.listdir('.'):
                     os.mkdir(RECORD_DIRECTORY_LOCATION)
-                else:
-                    if S3_SERVER_ENDPOINT is not None and S3_SERVER_AK is not None and S3_SERVER_SK is not None \
-                            and S3_SERVER_BUCKET is not None and S3_SERVER_REGION is not None:
-                        file_sync_manager = FileSyncManager(excluded_sync_filename=filename)
-                        file_sync_manager.start()
 
                 with open(filename, 'a') as file:
                     file.write(self.get_command_record(header=True))
