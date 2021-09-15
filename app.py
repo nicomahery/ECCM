@@ -7,6 +7,9 @@ from obd import utils
 from gps import *
 import configparser
 import minio
+import platform
+import subprocess
+import time
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -14,6 +17,8 @@ DATETIME_FORMAT = "%Y%m%d%H%M%S%f"
 DEVICE_TIME_LABEL = 'DEVICE_TIME'
 RECORD_DIRECTORY = 'recordings'
 S3_ROOT_DIRECTORY = 'car-logs'
+SECONDS_BETWEEN_PING = 60
+MESSAGE_RETRY_INTERVAL = 50
 RECORD_DIRECTORY_LOCATION = os.path.join('.', RECORD_DIRECTORY)
 CAR_IDENTIFIER = config.get('DEFAULT', 'CAR_IDENTIFIER', fallback=None)
 if CAR_IDENTIFIER is None:
@@ -34,6 +39,12 @@ S3_SERVER_BUCKET = config.get('DEFAULT', 'S3_SERVER_BUCKET', fallback=None)
 S3_SERVER_REGION = config.get('DEFAULT', 'S3_SERVER_REGION', fallback=None)
 
 
+def ping(host):
+    param = '-n' if platform.system().lower() == 'windows' else '-c'
+    command = ['ping', param, '1', host]
+    return subprocess.call(command) == 0
+
+
 class FileSyncManager(Thread):
     excluded_sync_filename = None
     running = False
@@ -44,9 +55,15 @@ class FileSyncManager(Thread):
 
     def run(self):
         self.running = True
+        retry_count = 0
+        print('FILE SYNC MANAGER STARTED')
+        while not ping(S3_SERVER_ENDPOINT):
+            retry_count = retry_count + 1
+            time.sleep(SECONDS_BETWEEN_PING)
+            if retry_count % MESSAGE_RETRY_INTERVAL == 0:
+                print(f'S3 SERVER PING RETRY COUNT {retry_count}')
         client = minio.Minio(endpoint=S3_SERVER_ENDPOINT, access_key=S3_SERVER_AK, secret_key=S3_SERVER_SK,
                              region=S3_SERVER_REGION)
-        print('FILE SYNC MANAGER STARTED')
         for filename in os.listdir(RECORD_DIRECTORY_LOCATION):
             if filename.endswith(MONITORING_FILE_EXTENSION) and filename != self.excluded_sync_filename:
                 client.fput_object(S3_SERVER_BUCKET, f'{S3_ROOT_DIRECTORY}/{CAR_IDENTIFIER}/{filename}',
