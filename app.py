@@ -4,7 +4,7 @@ from threading import Thread
 import datetime
 import obd
 from obd import utils
-from gps import *
+from gps3 import gps3
 import configparser
 import minio
 import platform
@@ -66,17 +66,56 @@ class FileSyncManager(Thread):
                              region=S3_SERVER_REGION)
         for filename in os.listdir(RECORD_DIRECTORY_LOCATION):
             if filename.endswith(MONITORING_FILE_EXTENSION) and filename != self.excluded_sync_filename:
-                client.fput_object(S3_SERVER_BUCKET, f'{S3_ROOT_DIRECTORY}/{CAR_IDENTIFIER}/{filename}',
-                                   os.path.join(RECORD_DIRECTORY_LOCATION, filename))
+                client.fput_object(bucket_name=S3_SERVER_BUCKET,
+                                   object_name=f'{S3_ROOT_DIRECTORY}/{CAR_IDENTIFIER}/{filename}',
+                                   file_path=os.path.join(RECORD_DIRECTORY_LOCATION, filename)
+                                   )
                 os.remove(os.path.join(RECORD_DIRECTORY_LOCATION, filename))
                 print(f'FILE {filename} SYNCED TO S3')
         print('FILE SYNC MANAGER ENDED')
         self.running = False
 
 
+class GNSSManager(Thread):
+    gpsd_socket = None
+    data_stream = None
+    latitude = None
+    longitude = None
+    altitude = None
+    track = None
+    speed = None
+
+    def __init__(self):
+        super().__init__()
+        self.gpsd_socket = gps3.GPSDSocket()
+        self.data_stream = gps3.DataStream()
+        self.gpsd_socket.connect()
+        self.gpsd_socket.watch()
+
+    def run(self):
+        for new_data in self.gpsd_socket:
+            if new_data:
+                self.data_stream.unpack(new_data)
+                self.altitude = self.data_stream.TPV['alt']
+                self.longitude = self.data_stream.TPV['lon']
+                self.latitude = self.data_stream.TPV['lat']
+                self.track = self.data_stream.TPV['track']
+                self.speed = self.data_stream.TPV['speed']
+
+    def get_data_for_header_name(self, header):
+        switch = {
+            'GPS LATITUDE (degree)': self.latitude,
+            'GPS LONGITUDE (degree)': self.longitude,
+            'GPS ALTITUDE (meter)': self.altitude,
+            'GPS SPEED (meter per second)': self.speed,
+            'GPS TRACK (degree)': self.track
+        }
+        return switch.get(header, None)
+
+
 class DataManager(Thread):
     obd_connection = None
-    gpsd = None
+    gnss_manager = None
     deviceTime = None
     running = False
 
@@ -350,6 +389,14 @@ class DataManager(Thread):
                     obd.commands.FUEL_INJECT_TIMING,
                     obd.commands.FUEL_RATE]
 
+    gps_data_label_list = [
+        'GPS LATITUDE (degree)',
+        'GPS LONGITUDE (degree)',
+        'GPS ALTITUDE (meter)',
+        'GPS SPEED (meter per second)',
+        'GPS TRACK (degree)'
+    ]
+
     string_to_status_dict = {
         'FUEL_STATUS': obd.commands.FUEL_STATUS,
         'AIR_STATUS': obd.commands.AIR_STATUS,
@@ -364,7 +411,7 @@ class DataManager(Thread):
 
     def __init__(self):
         super().__init__()
-        self.gpsd = gps(mode=WATCH_ENABLE)
+        self.gnss_manager = GNSSManager()
 
     def value_callback(self, response):
         self.command_value_dict[response.command] = response.value
@@ -430,6 +477,7 @@ class DataManager(Thread):
             print('CLOSE PREVIOUS OBD CONNECTION')
             self.obd_connection.close()
         else:
+            self.gnss_manager.start()
             for command in self.command_list:
                 self.obd_connection.watch(command)  # , callback=self.value_callback)
 
@@ -481,10 +529,30 @@ class DataManager(Thread):
             return None
         return self.obd_connection.query(obd.commands.GET_DTC)
 
-    def query_position(self):
+    def query_gps_latitude(self):
         if not self.running:
             return None
-        return self.gpsd.fix
+        return self.gnss_manager.latitude
+
+    def query_gps_longitude(self):
+        if not self.running:
+            return None
+        return self.gnss_manager.longitude
+
+    def query_gps_altitude(self):
+        if not self.running:
+            return None
+        return self.gnss_manager.altitude
+
+    def query_gps_speed(self):
+        if not self.running:
+            return None
+        return self.gnss_manager.speed
+
+    def query_gps_track(self):
+        if not self.running:
+            return None
+        return self.gnss_manager.track
 
     def clear_dtc(self):
         if not self.running:
@@ -499,11 +567,15 @@ class DataManager(Thread):
             ret = f'{DEVICE_TIME_LABEL}'
             for command in self.command_list:
                 ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.command_to_string_header_dict.get(command)}'
+            for gps_label in self.gps_data_label_list:
+                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{gps_label}'
             return ret + '\n'
         else:
             ret = f'{self.get_device_time_string(),}'
             for command in self.command_list:
                 ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.obd_connection.query(command).value}'
+            for gps_label in self.gps_data_label_list:
+                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.gnss_manager.get_data_for_header_name(gps_label)}'
             return ret + '\n'
 
     @staticmethod
@@ -541,13 +613,12 @@ def get_dtc():
 
 @app.route('/position')
 def get_position():
-    gps_data = data_manager.query_position()
     return jsonify(
-        latitude=gps_data.latitude,
-        longitude=gps_data.longitude,
-        altitude=gps_data.altitude,
-        speed=gps_data.speed,
-        track=gps_data.track,
+        latitude=data_manager.query_gps_latitude(),
+        longitude=data_manager.query_gps_longitude(),
+        altitude=data_manager.query_gps_altitude(),
+        speed=data_manager.query_gps_speed(),
+        track=data_manager.query_gps_track(),
     )
 
 
