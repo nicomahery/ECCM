@@ -409,9 +409,9 @@ class DataManager(Thread):
         obd.commands.AUX_INPUT_STATUS,
     ]
 
-    def __init__(self):
+    def __init__(self, gnss_manager):
         super().__init__()
-        self.gnss_manager = GNSSManager()
+        self.gnss_manager = gnss_manager
 
     def value_callback(self, response):
         self.command_value_dict[response.command] = response.value
@@ -477,7 +477,6 @@ class DataManager(Thread):
             print('CLOSE PREVIOUS OBD CONNECTION')
             self.obd_connection.close()
         else:
-            self.gnss_manager.start()
             for command in self.command_list:
                 self.obd_connection.watch(command)  # , callback=self.value_callback)
 
@@ -529,31 +528,6 @@ class DataManager(Thread):
             return None
         return self.obd_connection.query(obd.commands.GET_DTC)
 
-    def query_gps_latitude(self):
-        if not self.running:
-            return None
-        return self.gnss_manager.latitude
-
-    def query_gps_longitude(self):
-        if not self.running:
-            return None
-        return self.gnss_manager.longitude
-
-    def query_gps_altitude(self):
-        if not self.running:
-            return None
-        return self.gnss_manager.altitude
-
-    def query_gps_speed(self):
-        if not self.running:
-            return None
-        return self.gnss_manager.speed
-
-    def query_gps_track(self):
-        if not self.running:
-            return None
-        return self.gnss_manager.track
-
     def clear_dtc(self):
         if not self.running:
             return None
@@ -584,7 +558,13 @@ class DataManager(Thread):
 
 
 app = Flask(__name__)
-data_manager = DataManager()
+
+if __name__ == '__main__':
+    gnss_manager = GNSSManager()
+    gnss_manager.start()
+    data_manager = DataManager(gnss_manager=gnss_manager)
+    data_manager.start()
+    app.run()
 
 
 @app.route('/')
@@ -614,14 +594,9 @@ def get_dtc():
 @app.route('/position')
 def get_position():
     return jsonify(
-        latitude=data_manager.query_gps_latitude(),
-        longitude=data_manager.query_gps_longitude(),
-        altitude=data_manager.query_gps_altitude(),
-        speed=data_manager.query_gps_speed(),
-        track=data_manager.query_gps_track(),
+        latitude=gnss_manager.latitude,
+        longitude=gnss_manager.longitude,
+        altitude=gnss_manager.altitude,
+        speed=gnss_manager.speed,
+        track=gnss_manager.track,
     )
-
-
-if __name__ == '__main__':
-    data_manager.start()
-    app.run()
