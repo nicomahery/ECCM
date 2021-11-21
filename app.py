@@ -492,11 +492,10 @@ class DataManager(Thread):
                 if not os.path.exists(RECORD_DIRECTORY_LOCATION):
                     os.makedirs(RECORD_DIRECTORY_LOCATION)
 
-                with open(filename, 'a') as file:
-                    file.write(self.get_command_record(header=True))
-                    while self.running:
-                        file.write(self.get_command_record(header=False))
-                        time.sleep(0.5)
+                self.write_record_line_to_file(filename, True)
+                while self.running:
+                    self.write_record_line_to_file(filename, False)
+                    time.sleep(0.5)
 
             else:
                 while self.running:
@@ -506,6 +505,11 @@ class DataManager(Thread):
             self.obd_connection.unwatch_all()
             print('CLOSE USED OBD CONNECTION')
             self.obd_connection.close()
+
+    def write_record_line_to_file(self, filename, header):
+        file = open(filename, 'a')
+        file.write(self.get_command_record(header=header))
+        file.close()
 
     def terminate(self):
         self.running = False
