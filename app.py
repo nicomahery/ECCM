@@ -545,7 +545,7 @@ class DataManager(Thread):
                 ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{gps_label}'
             return ret + '\n'
         else:
-            ret = f'{self.get_device_time_string(),}'
+            ret = self.get_device_time_string()
             for command in self.command_list:
                 ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.obd_connection.query(command).value}'
             for gps_label in self.gps_data_label_list:
