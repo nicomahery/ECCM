@@ -15,11 +15,10 @@ config = configparser.ConfigParser()
 config.read('config.ini')
 DATETIME_FORMAT = "%Y%m%d%H%M%S%f"
 DEVICE_TIME_LABEL = 'DEVICE_TIME'
-RECORD_DIRECTORY = 'recordings'
 S3_ROOT_DIRECTORY = 'car-logs'
 SECONDS_BETWEEN_PING = 60
 MESSAGE_RETRY_INTERVAL = 50
-RECORD_DIRECTORY_LOCATION = os.path.join('.', RECORD_DIRECTORY)
+RECORD_DIRECTORY_LOCATION = config.get('DEFAULT', 'RECORD_DIRECTORY_LOCATION', fallback='.')
 CAR_IDENTIFIER = config.get('DEFAULT', 'CAR_IDENTIFIER', fallback=None)
 if CAR_IDENTIFIER is None:
     print('NO CAR_IDENTIFIER FOUND')
@@ -490,8 +489,8 @@ class DataManager(Thread):
             self.running = True
 
             if FILE_RECORDING:
-                if RECORD_DIRECTORY not in os.listdir('.'):
-                    os.mkdir(RECORD_DIRECTORY_LOCATION)
+                if not os.path.exists(RECORD_DIRECTORY_LOCATION):
+                    os.makedirs(RECORD_DIRECTORY_LOCATION)
 
                 with open(filename, 'a') as file:
                     file.write(self.get_command_record(header=True))
