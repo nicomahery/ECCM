@@ -26,6 +26,10 @@ if CAR_IDENTIFIER is None:
     exit(0)
 OBD_INTERFACE = config.get('DEFAULT', 'OBD_INTERFACE', fallback=None)
 FILE_RECORDING = config['DEFAULT'].getboolean('FILE_RECORDING', fallback=False)
+GPS_POSITION_MONITORING = config['DEFAULT'].getboolean('GPS_POSITION_MONITORING', fallback=False)
+GEOPOSITION_SERVER_LOCATION = config['DEFAULT'].get('GEOPOSITION_SERVER_LOCATION', fallback=None)
+GEOPOSITION_SERVER_ACCESS_KEY = config['DEFAULT'].get('GEOPOSITION_SERVER_ACCESS_KEY', fallback=None)
+GEOPOSITION_SERVER_UPDATE_PERIOD = config['DEFAULT'].getfloat('GEOPOSITION_SERVER_ACCESS_KEY', fallback=None)
 MONITORING_FILE_EXTENSION = config.get('DEFAULT', 'MONITORING_FILE_EXTENSION', fallback='.tsv')
 MONITORING_FILE_SEPARATION_CHARACTER_FALLBACK = '\t' if MONITORING_FILE_EXTENSION == '.tsv' else ',' \
     if MONITORING_FILE_EXTENSION == '.csv' else '|'
@@ -86,20 +90,22 @@ class GNSSManager(Thread):
 
     def __init__(self):
         super().__init__()
-        self.gpsd_socket = gps3.GPSDSocket()
-        self.data_stream = gps3.DataStream()
-        self.gpsd_socket.connect()
-        self.gpsd_socket.watch()
+        if GPS_POSITION_MONITORING:
+            self.gpsd_socket = gps3.GPSDSocket()
+            self.data_stream = gps3.DataStream()
+            self.gpsd_socket.connect()
+            self.gpsd_socket.watch()
 
     def run(self):
-        for new_data in self.gpsd_socket:
-            if new_data:
-                self.data_stream.unpack(new_data)
-                self.altitude = self.data_stream.TPV['alt']
-                self.longitude = self.data_stream.TPV['lon']
-                self.latitude = self.data_stream.TPV['lat']
-                self.track = self.data_stream.TPV['track']
-                self.speed = self.data_stream.TPV['speed']
+        if GPS_POSITION_MONITORING:
+            for new_data in self.gpsd_socket:
+                if new_data:
+                    self.data_stream.unpack(new_data)
+                    self.altitude = self.data_stream.TPV['alt']
+                    self.longitude = self.data_stream.TPV['lon']
+                    self.latitude = self.data_stream.TPV['lat']
+                    self.track = self.data_stream.TPV['track']
+                    self.speed = self.data_stream.TPV['speed']
 
     def get_data_for_header_name(self, header):
         switch = {
@@ -506,9 +512,9 @@ class DataManager(Thread):
             print('CLOSE USED OBD CONNECTION')
             self.obd_connection.close()
 
-    def write_record_line_to_file(self, filename, header):
+    def write_record_line_to_file(self, filename, write_header):
         file = open(filename, 'a')
-        file.write(self.get_command_record(header=header))
+        file.write(self.get_command_record(write_header))
         file.close()
 
     def terminate(self):
@@ -536,23 +542,27 @@ class DataManager(Thread):
             return None
         return self.obd_connection.query(obd.commands.CLEAR_DTC)
 
-    def get_command_record(self, header=False):
-        if not self.running:
+    def get_command_record(self, write_header):
+        if not self.running or write_header is None:
             return None
         ret = ''
-        if header:
-            ret = f'{DEVICE_TIME_LABEL}'
+        if write_header:
+            ret = DEVICE_TIME_LABEL
             for command in self.command_list:
                 ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.command_to_string_header_dict.get(command)}'
-            for gps_label in self.gps_data_label_list:
-                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{gps_label}'
+
+            if GPS_POSITION_MONITORING:
+                for gps_label in self.gps_data_label_list:
+                    ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{gps_label}'
             return ret + '\n'
         else:
             ret = self.get_device_time_string()
             for command in self.command_list:
                 ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.obd_connection.query(command).value}'
-            for gps_label in self.gps_data_label_list:
-                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.gnss_manager.get_data_for_header_name(gps_label)}'
+
+            if GPS_POSITION_MONITORING:
+                for gps_label in self.gps_data_label_list:
+                    ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.gnss_manager.get_data_for_header_name(gps_label)}'
             return ret + '\n'
 
     @staticmethod
