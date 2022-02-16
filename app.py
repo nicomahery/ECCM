@@ -1,6 +1,7 @@
 import os.path
-from flask import Flask, jsonify
 from threading import Thread
+import socket
+import socketserver
 import datetime
 import obd
 from obd import utils
@@ -40,12 +41,97 @@ S3_SERVER_AK = config.get('DEFAULT', 'S3_SERVER_AK', fallback=None)
 S3_SERVER_SK = config.get('DEFAULT', 'S3_SERVER_SK', fallback=None)
 S3_SERVER_BUCKET = config.get('DEFAULT', 'S3_SERVER_BUCKET', fallback=None)
 S3_SERVER_REGION = config.get('DEFAULT', 'S3_SERVER_REGION', fallback=None)
+ENABLE_SOCKET_SERVER = config['DEFAULT'].getboolean('ENABLE_SOCKET_SERVER', fallback=False)
+SOCKET_SERVER_PORT = config.getint('DEFAULT', 'SOCKET_SERVER_PORT', fallback=80)
+SOCKET_SERVER_SECRET = config['DEFAULT'].get('SOCKET_SERVER_SECRET', fallback=None)
 
 
 def ping(host):
     param = '-n' if platform.system().lower() == 'windows' else '-c'
     command = ['ping', param, '1', host]
     return subprocess.call(command) == 0
+
+
+class SocketTCPHandler(socketserver.BaseRequestHandler):
+    #query_command = 'QUERY_COMMAND'
+    #query_status = 'QUERY_STATUS'
+    #get_dtc = 'GET_DTC'
+    data_manager_not_available_message = 'DATA MANAGER NOT AVAILABLE'
+    main_manager_not_available_message = 'MAIN MANAGER NOT AVAILABLE'
+    authenticated = (SOCKET_SERVER_SECRET is None)
+
+    """
+        The request handler class for our server.
+
+        It is instantiated once per connection to the server, and must
+        override the handle() method to implement communication to the
+        client.
+        """
+
+    def query_command(self, command):
+        if self.server.main_manager is None or self.server.main_manager.data_manager is None:
+            return self.data_manager_not_available_message
+        return self.server.main_manager.data_manager.query_command(command)
+
+    def query_status(self, status_type):
+        if self.server.main_manager is None or self.server.main_manager.data_manager is None:
+            return self.data_manager_not_available_message
+        return self.server.main_manager.data_manager.query_status(status_type)
+
+    def get_dtc(self):
+        if self.server.main_manager is None or self.server.main_manager.data_manager is None:
+            return self.data_manager_not_available_message
+        return self.server.main_manager.data_manager.query_dtc()
+
+    def clear_dtc(self):
+        if self.server.main_manager is None or self.server.main_manager.data_manager is None:
+            return self.data_manager_not_available_message
+        return self.server.main_manager.data_manager.clear_dtc()
+
+    def restart_data_manager(self):
+        if self.server.main_manager is None:
+            return self.main_manager_not_available_message
+        self.server.main_manager.restart_data_manager()
+        return 'RESTART IN PROGRESS'
+
+    def get_command_list(self):
+        if self.server.main_manager is None or self.server.main_manager.data_manager is None \
+                or not self.server.main_manager.data_manager.running:
+            return self.data_manager_not_available_message
+        return ','.join(self.server.main_manager.data_manager.get_command_list())
+
+    def handle(self):
+        # self.request is the TCP socket connected to the client
+        while True:
+            self.data = self.request.recv(1024).decode()
+            command = None
+            parameter = None
+            if not self.data:
+                # if data is not received break
+                break
+            data = str(self.data)
+            print("{} wrote:{}".format(self.client_address[0], data))
+            if self.authenticated:
+                if data.__contains__('>>'):
+                    command, parameter = str(self.data).split('>>')
+                else:
+                    command = data
+                switch = {
+                    'QUERY_COMMAND': self.query_command(parameter),
+                    'QUERY_STATUS': self.query_status(parameter),
+                    'GET_DTC': self.get_dtc(),
+                    'CLEAR_DTC': self.clear_dtc(),
+                    'RESTART_DATA_MANAGER': self.restart_data_manager(),
+                    'GET_COMMAND_LIST': self.get_command_list()
+                }
+
+                self.request.sendall(str(switch.get(command, 'INVALID COMMAND')).encode())
+            else:
+                if data == SOCKET_SERVER_SECRET:
+                    self.authenticated = True
+                else:
+                    print('WRONG SECRET')
+                    break
 
 
 class FileSyncManager(Thread):
@@ -565,51 +651,43 @@ class DataManager(Thread):
                     ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.gnss_manager.get_data_for_header_name(gps_label)}'
             return ret + '\n'
 
+    def get_command_list(self):
+        return [self.command_to_string_header_dict[command] for command in self.command_list]
+
     @staticmethod
     def get_device_time_string():
         return datetime.datetime.now().strftime(DATETIME_FORMAT)
 
 
-app = Flask(__name__)
+class MainManager(Thread):
+    running = False
+    gnss_manager = None
+    data_manager = None
+
+    def __init__(self):
+        super().__init__()
+
+    def run(self):
+        self.running = True
+        self.start_gnss_manager()
+        self.restart_data_manager()
+
+    def start_gnss_manager(self):
+        self.gnss_manager = GNSSManager()
+        self.gnss_manager.start()
+
+    def restart_data_manager(self):
+        if self.data_manager is not None:
+            self.data_manager.terminate()
+            self.data_manager.join()
+        self.data_manager = DataManager(self.gnss_manager)
+        self.data_manager.start()
+
 
 if __name__ == '__main__':
-    gnss_manager = GNSSManager()
-    gnss_manager.start()
-    data_manager = DataManager(gnss_manager=gnss_manager)
-    data_manager.start()
-    app.run()
-
-
-@app.route('/')
-def hello_world():  # put application's code here
-    return 'Hello World!'
-
-
-@app.route('/command/<command>')
-def get_command(command):
-    response = data_manager.query_command(command)
-    return jsonify(
-        value=response.value.magnitude,
-        unit=response.unit
-    )
-
-
-@app.route('/status/<status>')
-def get_status(status):
-    return data_manager.query_status(status)
-
-
-@app.route('/dtc')
-def get_dtc():
-    return data_manager.query_dtc()
-
-
-@app.route('/position')
-def get_position():
-    return jsonify(
-        latitude=gnss_manager.latitude,
-        longitude=gnss_manager.longitude,
-        altitude=gnss_manager.altitude,
-        speed=gnss_manager.speed,
-        track=gnss_manager.track,
-    )
+    main_manager = MainManager()
+    main_manager.start()
+    if ENABLE_SOCKET_SERVER and SOCKET_SERVER_PORT is not None:
+        with socketserver.TCPServer((socket.gethostname(), SOCKET_SERVER_PORT), SocketTCPHandler) as server:
+            server.main_manager = main_manager
+            server.serve_forever()
