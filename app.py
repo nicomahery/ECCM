@@ -53,9 +53,6 @@ def ping(host):
 
 
 class SocketTCPHandler(socketserver.BaseRequestHandler):
-    #query_command = 'QUERY_COMMAND'
-    #query_status = 'QUERY_STATUS'
-    #get_dtc = 'GET_DTC'
     data_manager_not_available_message = 'DATA MANAGER NOT AVAILABLE'
     main_manager_not_available_message = 'MAIN MANAGER NOT AVAILABLE'
     authenticated = (SOCKET_SERVER_SECRET is None)
