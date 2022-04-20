@@ -206,6 +206,7 @@ class DataManager(Thread):
     gnss_manager = None
     deviceTime = None
     running = False
+    header_line_written = False
 
     command_value_dict = {}
 
@@ -583,8 +584,11 @@ class DataManager(Thread):
 
                 self.write_record_line_to_file(filename, True)
                 while self.running:
-                    self.write_record_line_to_file(filename, False)
-                    time.sleep(0.5)
+                    if self.header_line_written:
+                        self.write_record_line_to_file(filename, False)
+                        time.sleep(0.5)
+                    else:
+                        time.sleep(0.1)
 
             else:
                 while self.running:
@@ -599,6 +603,7 @@ class DataManager(Thread):
         file = open(filename, 'a')
         file.write(self.get_command_record(write_header))
         file.close()
+        self.header_line_written = (self.header_line_written or write_header)
 
     def terminate(self):
         self.running = False
