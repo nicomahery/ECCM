@@ -377,7 +377,7 @@ class DataManager(Thread):
         obd.commands.FUEL_TYPE: "FUEL TYPE",
         obd.commands.ETHANOL_PERCENT: "ETHANOL PERCENT (percent)",
         obd.commands.EVAP_VAPOR_PRESSURE_ABS: "ABSOLUTE EVAPORATIVE VAPOR PRESSURE (kilopascal)",
-        obd.commands.EVAP_VAPOR_PRESSURE_ALT: "EVAPORATIVE VAPOR PRESSURE (pascal)",
+        obd.commands.EVAP_VAPOR_PRESSURE_ALT: "ALT EVAPORATIVE VAPOR PRESSURE (pascal)",
         obd.commands.SHORT_O2_TRIM_B1: "SHORT O2 TRIM BANK1 (percent)",
         obd.commands.LONG_O2_TRIM_B1: "LONG O2 TRIM BANK1 (percent)",
         obd.commands.SHORT_O2_TRIM_B2: "SHORT O2 TRIM BANK2 (percent)",
