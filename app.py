@@ -1,5 +1,6 @@
 import os.path
 from threading import Thread
+import queue
 import socket
 import socketserver
 import datetime
@@ -162,6 +163,36 @@ class FileSyncManager(Thread):
         self.running = False
 
 
+class FileUpdateManager(Thread):
+    filename = None
+    running = False
+    q = None
+
+    def __init__(self, filename, q):
+        self.filename = filename
+        self.q = q
+        super().__init__()
+
+    def run(self):
+        self.running = True
+        while self.running:
+            if not self.q.qsize() == 0:
+                file = open(self.filename, 'a')
+                while not self.q.qsize() == 0:
+                    try:
+                        file.write(self.q.get_nowait())
+                        self.q.task_done()
+                    except queue.Empty:
+                        print('file queue already empty')
+
+                file.close()
+
+            if self.running:
+                time.sleep(2)
+
+    def terminate(self):
+        self.running = False
+
 class GNSSManager(Thread):
     gpsd_socket = None
     data_stream = None
@@ -207,6 +238,8 @@ class DataManager(Thread):
     deviceTime = None
     running = False
     header_line_written = False
+    q = None
+    fileUpdateManager = None
 
     command_value_dict = {}
 
@@ -581,14 +614,13 @@ class DataManager(Thread):
             if FILE_RECORDING:
                 if not os.path.exists(RECORD_DIRECTORY_LOCATION):
                     os.makedirs(RECORD_DIRECTORY_LOCATION)
-
+                self.q = queue.Queue()
+                self.fileUpdateManager = FileUpdateManager(filename, self.q)
+                self.fileUpdateManager.start()
                 self.write_record_line_to_file(filename, True)
                 while self.running:
-                    if self.header_line_written:
-                        self.write_record_line_to_file(filename, False)
-                        time.sleep(0.5)
-                    else:
-                        time.sleep(0.1)
+                    self.write_record_line_to_file(filename, False)
+                    time.sleep(0.5)
 
             else:
                 while self.running:
@@ -598,12 +630,19 @@ class DataManager(Thread):
             self.obd_connection.unwatch_all()
             print('CLOSE USED OBD CONNECTION')
             self.obd_connection.close()
+            self.fileUpdateManager.terminate()
+            self.fileUpdateManager.join()
+            print('CARLOG FILE CLOSED')
 
     def write_record_line_to_file(self, filename, write_header):
-        file = open(filename, 'a')
-        file.write(self.get_command_record(write_header))
-        file.close()
-        self.header_line_written = (self.header_line_written or write_header)
+        try:
+            self.q.put_nowait(self.get_command_record(write_header))
+        except queue.Full:
+            print('file queue full')
+        #file = open(filename, 'a')
+        #file.write(self.get_command_record(write_header))
+        #file.close()
+        #self.header_line_written = (self.header_line_written or write_header)
 
     def terminate(self):
         self.running = False
