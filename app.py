@@ -176,6 +176,7 @@ class FileUpdateManager(Thread):
     def run(self):
         self.running = True
         while self.running:
+            time.sleep(2)
             if not self.q.qsize() == 0:
                 file = open(self.filename, 'a')
                 while not self.q.qsize() == 0:
@@ -187,11 +188,9 @@ class FileUpdateManager(Thread):
 
                 file.close()
 
-            if self.running:
-                time.sleep(2)
-
     def terminate(self):
         self.running = False
+
 
 class GNSSManager(Thread):
     gpsd_socket = None
@@ -618,9 +617,14 @@ class DataManager(Thread):
                 self.fileUpdateManager = FileUpdateManager(filename, self.q)
                 self.fileUpdateManager.start()
                 self.write_record_line_to_file(filename, True)
+
                 while self.running:
                     self.write_record_line_to_file(filename, False)
                     time.sleep(0.5)
+
+                self.fileUpdateManager.terminate()
+                self.fileUpdateManager.join()
+                print('CARLOG FILE CLOSED')
 
             else:
                 while self.running:
@@ -630,9 +634,6 @@ class DataManager(Thread):
             self.obd_connection.unwatch_all()
             print('CLOSE USED OBD CONNECTION')
             self.obd_connection.close()
-            self.fileUpdateManager.terminate()
-            self.fileUpdateManager.join()
-            print('CARLOG FILE CLOSED')
 
     def write_record_line_to_file(self, filename, write_header):
         try:
