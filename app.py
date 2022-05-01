@@ -231,18 +231,6 @@ class GNSSManager(Thread):
         return switch.get(header, None)
 
 
-global_label_list = [
-    'CAR ID'
-]
-
-
-def get_global_value_for_header(header):
-    switch = {
-        'CAR ID': CAR_IDENTIFIER
-    }
-    return switch.get(header, None)
-
-
 class DataManager(Thread):
     obd_connection = None
     gnss_manager = None
@@ -251,6 +239,8 @@ class DataManager(Thread):
     header_line_written = False
     q = None
     fileUpdateManager = None
+    car_id = None
+    trip_id = None
 
     command_value_dict = {}
 
@@ -530,6 +520,11 @@ class DataManager(Thread):
         'GPS TRACK (degree)'
     ]
 
+    global_label_list = [
+        'CAR ID',
+        'TRIP ID'
+    ]
+
     string_to_status_dict = {
         'FUEL_STATUS': obd.commands.FUEL_STATUS,
         'AIR_STATUS': obd.commands.AIR_STATUS,
@@ -542,8 +537,9 @@ class DataManager(Thread):
         obd.commands.AUX_INPUT_STATUS,
     ]
 
-    def __init__(self, gnss_manager):
+    def __init__(self, gnss_manager, car_id):
         super().__init__()
+        self.car_id = car_id
         self.gnss_manager = gnss_manager
 
     def value_callback(self, response):
@@ -555,7 +551,8 @@ class DataManager(Thread):
         self.obd_connection = obd.Async(OBD_INTERFACE)
         time.sleep(2)
         wait_count = 1
-        filename = os.path.join(RECORD_DIRECTORY_LOCATION, self.get_device_time_string() + MONITORING_FILE_EXTENSION)
+        self.trip_id = self.get_device_time_string()
+        filename = os.path.join(RECORD_DIRECTORY_LOCATION, self.trip_id + MONITORING_FILE_EXTENSION)
         if S3_SERVER_ENDPOINT is not None and S3_SERVER_AK is not None and S3_SERVER_SK is not None \
                 and S3_SERVER_BUCKET is not None and S3_SERVER_REGION is not None:
             file_sync_manager = FileSyncManager(excluded_sync_filename=filename)
@@ -628,10 +625,10 @@ class DataManager(Thread):
                 self.q = queue.Queue()
                 self.fileUpdateManager = FileUpdateManager(filename, self.q)
                 self.fileUpdateManager.start()
-                self.write_record_line_to_file(filename, True)
+                self.write_record_line_to_file(True)
 
                 while self.running:
-                    self.write_record_line_to_file(filename, False)
+                    self.write_record_line_to_file(False)
                     time.sleep(0.5)
 
                 self.fileUpdateManager.terminate()
@@ -647,15 +644,11 @@ class DataManager(Thread):
             print('CLOSE USED OBD CONNECTION')
             self.obd_connection.close()
 
-    def write_record_line_to_file(self, filename, write_header):
+    def write_record_line_to_file(self, write_header):
         try:
             self.q.put_nowait(self.get_command_record(write_header))
         except queue.Full:
             print('file queue full')
-        #file = open(filename, 'a')
-        #file.write(self.get_command_record(write_header))
-        #file.close()
-        #self.header_line_written = (self.header_line_written or write_header)
 
     def terminate(self):
         self.running = False
@@ -685,10 +678,10 @@ class DataManager(Thread):
     def get_command_record(self, write_header):
         if not self.running or write_header is None:
             return None
-        ret = ''
+
         if write_header:
             ret = DEVICE_TIME_LABEL
-            for header in global_label_list:
+            for header in self.global_label_list:
                 ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{header}'
 
             for command in self.command_list:
@@ -700,8 +693,8 @@ class DataManager(Thread):
             return ret + '\n'
         else:
             ret = self.get_device_time_string()
-            for header in global_label_list:
-                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{get_global_value_for_header(header)}'
+            for header in self.global_label_list:
+                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.get_global_value_for_header(header)}'
 
             for command in self.command_list:
                 ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.obd_connection.query(command).value}'
@@ -713,6 +706,13 @@ class DataManager(Thread):
 
     def get_command_list(self):
         return [self.command_to_string_header_dict[command] for command in self.command_list]
+
+    def get_global_value_for_header(self, header):
+        switch = {
+            'CAR ID': self.car_id,
+            'TRIP ID': self.trip_id
+        }
+        return switch.get(header, None)
 
     @staticmethod
     def get_device_time_string():
@@ -740,7 +740,7 @@ class MainManager(Thread):
         if self.data_manager is not None:
             self.data_manager.terminate()
             self.data_manager.join()
-        self.data_manager = DataManager(self.gnss_manager)
+        self.data_manager = DataManager(self.gnss_manager, CAR_IDENTIFIER)
         self.data_manager.start()
 
 
