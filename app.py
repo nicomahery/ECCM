@@ -231,6 +231,18 @@ class GNSSManager(Thread):
         return switch.get(header, None)
 
 
+global_label_list = [
+    'CAR ID'
+]
+
+
+def get_global_value_for_header(header):
+    switch = {
+        'CAR ID': CAR_IDENTIFIER
+    }
+    return switch.get(header, None)
+
+
 class DataManager(Thread):
     obd_connection = None
     gnss_manager = None
@@ -676,6 +688,9 @@ class DataManager(Thread):
         ret = ''
         if write_header:
             ret = DEVICE_TIME_LABEL
+            for header in global_label_list:
+                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{header}'
+
             for command in self.command_list:
                 ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.command_to_string_header_dict.get(command)}'
 
@@ -685,6 +700,9 @@ class DataManager(Thread):
             return ret + '\n'
         else:
             ret = self.get_device_time_string()
+            for header in global_label_list:
+                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{get_global_value_for_header(header)}'
+
             for command in self.command_list:
                 ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.obd_connection.query(command).value}'
 
