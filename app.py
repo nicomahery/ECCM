@@ -255,11 +255,12 @@ class DataManager(Thread):
     command_to_string_header_dict = None
     gps_data_label_list = None
 
-    def __init__(self, gnss_manager, car_id, command_list, string_to_command_dict, string_to_status_dict,
+    def __init__(self, gnss_manager, car_id, obd_connection, command_list, string_to_command_dict, string_to_status_dict,
                  global_label_list, command_to_string_header_dict, gps_data_label_list):
         super().__init__()
         self.car_id = car_id
         self.gnss_manager = gnss_manager
+        self.obd_connection = obd_connection
         self.command_list = command_list
         self.string_to_command_dict = string_to_command_dict
         self.string_to_status_dict = string_to_status_dict
@@ -703,7 +704,7 @@ class MainManager(Thread):
     def restart_data_manager(self):
         if self.data_manager is not None:
             self.stop_data_manager()
-        self.data_manager = DataManager(self.gnss_manager, CAR_IDENTIFIER, self.command_list,
+        self.data_manager = DataManager(self.gnss_manager, CAR_IDENTIFIER, self.obd_connection, self.command_list,
                                         self.string_to_command_dict, self.string_to_status_dict, self.global_label_list,
                                         self.command_to_string_header_dict, self.gps_data_label_list)
         self.data_manager.start()
