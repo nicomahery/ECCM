@@ -200,6 +200,7 @@ class GNSSManager(Thread):
     altitude = None
     track = None
     speed = None
+    stop_flag = False
 
     def __init__(self):
         super().__init__()
@@ -219,6 +220,8 @@ class GNSSManager(Thread):
                     self.latitude = self.data_stream.TPV['lat']
                     self.track = self.data_stream.TPV['track']
                     self.speed = self.data_stream.TPV['speed']
+                if self.stop_flag:
+                    break
 
     def get_data_for_header_name(self, header):
         switch = {
@@ -229,6 +232,10 @@ class GNSSManager(Thread):
             'GPS TRACK (degree)': self.track
         }
         return switch.get(header, None)
+
+    def terminate(self):
+        self.stop_flag = True
+        self.gpsd_socket.close()
 
 
 class DataManager(Thread):
@@ -241,8 +248,136 @@ class DataManager(Thread):
     fileUpdateManager = None
     car_id = None
     trip_id = None
+    command_list = None
+    string_to_command_dict = None
+    string_to_status_dict = None
+    global_label_list = None
+    command_to_string_header_dict = None
+    gps_data_label_list = None
 
-    command_value_dict = {}
+    def __init__(self, gnss_manager, car_id, command_list, string_to_command_dict, string_to_status_dict,
+                 global_label_list, command_to_string_header_dict, gps_data_label_list):
+        super().__init__()
+        self.car_id = car_id
+        self.gnss_manager = gnss_manager
+        self.command_list = command_list
+        self.string_to_command_dict = string_to_command_dict
+        self.string_to_status_dict = string_to_status_dict
+        self.global_label_list = global_label_list
+        self.command_to_string_header_dict = command_to_string_header_dict
+        self.gps_data_label_list = gps_data_label_list
+
+    def run(self):
+        self.running = False
+        self.trip_id = self.get_device_time_string()
+        filename = os.path.join(RECORD_DIRECTORY_LOCATION, self.trip_id + MONITORING_FILE_EXTENSION)
+        if S3_SERVER_ENDPOINT is not None and S3_SERVER_AK is not None and S3_SERVER_SK is not None \
+                and S3_SERVER_BUCKET is not None and S3_SERVER_REGION is not None:
+            file_sync_manager = FileSyncManager(excluded_sync_filename=filename)
+            file_sync_manager.start()
+
+        self.running = True
+
+        if FILE_RECORDING:
+            if not os.path.exists(RECORD_DIRECTORY_LOCATION):
+                os.makedirs(RECORD_DIRECTORY_LOCATION)
+            self.q = queue.Queue()
+            self.fileUpdateManager = FileUpdateManager(filename, self.q)
+            self.fileUpdateManager.start()
+            self.write_record_line_to_file(True)
+
+            while self.running:
+                self.write_record_line_to_file(False)
+                time.sleep(0.5)
+
+            self.fileUpdateManager.terminate()
+            self.fileUpdateManager.join()
+            print('CARLOG FILE CLOSED')
+
+        else:
+            while self.running:
+                time.sleep(0.5)
+
+    def write_record_line_to_file(self, write_header):
+        try:
+            self.q.put_nowait(self.get_command_record(write_header))
+        except queue.Full:
+            print('file queue full')
+
+    def terminate(self):
+        self.running = False
+
+    def query_command(self, string_command):
+        command = self.string_to_command_dict.get(string_command)
+        if command is None or not self.command_list.__contains__(command) or not self.running:
+            return None
+        return self.obd_connection.query(command)
+
+    def query_status(self, string_status):
+        status = self.string_to_status_dict.get(string_status)
+        if status is None or not self.running:
+            return None
+        return self.obd_connection.query(status)
+
+    def query_dtc(self):
+        if not self.running:
+            return None
+        return self.obd_connection.query(obd.commands.GET_DTC)
+
+    def clear_dtc(self):
+        if not self.running:
+            return None
+        return self.obd_connection.query(obd.commands.CLEAR_DTC)
+
+    def get_command_record(self, write_header):
+        if not self.running or write_header is None:
+            return None
+
+        if write_header:
+            ret = DEVICE_TIME_LABEL
+            for header in self.global_label_list:
+                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{header}'
+
+            for command in self.command_list:
+                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.command_to_string_header_dict.get(command)}'
+
+            if GPS_POSITION_MONITORING:
+                for gps_label in self.gps_data_label_list:
+                    ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{gps_label}'
+            return ret + '\n'
+        else:
+            ret = self.get_device_time_string()
+            for header in self.global_label_list:
+                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.get_global_value_for_header(header)}'
+
+            for command in self.command_list:
+                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.obd_connection.query(command).value}'
+
+            if GPS_POSITION_MONITORING:
+                for gps_label in self.gps_data_label_list:
+                    ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.gnss_manager.get_data_for_header_name(gps_label)}'
+            return ret + '\n'
+
+    def get_command_list(self):
+        return [self.command_to_string_header_dict[command] for command in self.command_list]
+
+    def get_global_value_for_header(self, header):
+        switch = {
+            'CAR ID': self.car_id,
+            'TRIP ID': self.trip_id
+        }
+        return switch.get(header, None)
+
+    @staticmethod
+    def get_device_time_string():
+        return datetime.datetime.now().strftime(DATETIME_FORMAT)
+
+
+class MainManager(Thread):
+    running = False
+    obd_connection = None
+    gnss_manager = None
+    data_manager = None
 
     string_to_command_dict = {
         'ENGINE_LOAD': obd.commands.ENGINE_LOAD,
@@ -537,31 +672,59 @@ class DataManager(Thread):
         obd.commands.AUX_INPUT_STATUS,
     ]
 
-    def __init__(self, gnss_manager, car_id):
+    def __init__(self):
         super().__init__()
-        self.car_id = car_id
-        self.gnss_manager = gnss_manager
-
-    def value_callback(self, response):
-        self.command_value_dict[response.command] = response.value
 
     def run(self):
-        self.running = False
+        self.running = True
+        self.start_gnss_manager()
+        self.start_obd_connection()
+        if self.obd_connection is not None:
+            self.restart_data_manager()
+        else:
+            print('UNABLE TO HAVE OBD CONNECTION: NOT STARTING DATA MANAGER')
+
+    def start_gnss_manager(self):
+        self.gnss_manager = GNSSManager()
+        self.gnss_manager.start()
+
+    def stop_data_manager(self):
+        self.data_manager.terminate()
+        self.data_manager.join()
+        self.data_manager = None
+
+    def terminate(self):
+        self.stop_data_manager()
+        self.data_manager.join()
+        self.gnss_manager.terminate()
+        self.gnss_manager.join()
+        self.stop_obd_connection()
+
+    def restart_data_manager(self):
+        if self.data_manager is not None:
+            self.stop_data_manager()
+        self.data_manager = DataManager(self.gnss_manager, CAR_IDENTIFIER, self.command_list,
+                                        self.string_to_command_dict, self.string_to_status_dict, self.global_label_list,
+                                        self.command_to_string_header_dict, self.gps_data_label_list)
+        self.data_manager.start()
+
+    def stop_obd_connection(self):
+        self.obd_connection.stop()
+        self.obd_connection.unwatch_all()
+        print('CLOSE USED OBD CONNECTION')
+        self.obd_connection.close()
+
+    def start_obd_connection(self):
         print('START NEW OBD CONNECTION')
         self.obd_connection = obd.Async(OBD_INTERFACE)
         time.sleep(2)
         wait_count = 1
-        self.trip_id = self.get_device_time_string()
-        filename = os.path.join(RECORD_DIRECTORY_LOCATION, self.trip_id + MONITORING_FILE_EXTENSION)
-        if S3_SERVER_ENDPOINT is not None and S3_SERVER_AK is not None and S3_SERVER_SK is not None \
-                and S3_SERVER_BUCKET is not None and S3_SERVER_REGION is not None:
-            file_sync_manager = FileSyncManager(excluded_sync_filename=filename)
-            file_sync_manager.start()
 
         while self.obd_connection.status() == utils.OBDStatus.NOT_CONNECTED:
             print('OBD NOT CONNECTED')
-            if wait_count > 60:
+            if wait_count > 500:
                 self.obd_connection.close()
+                self.obd_connection = None
                 print('FAILED TO CREATE OBD CONNECTION')
                 return
             print('RETRY CONNECTION N°' + str(wait_count))
@@ -597,11 +760,7 @@ class DataManager(Thread):
                 print('UNSUPPORTED OBD COMMAND: ' + str(command))
                 print(str(self.obd_connection.query(command, force=True).value))
                 self.command_list.remove(command)
-                # connection_complete = False
-                # print('CLOSE PREVIOUS OBD CONNECTION')
-                # self.obd_connection.close()
-                # time.sleep(4)
-                # break
+
         if self.command_list.__len__() < 1:
             print('NO OBD COMMAND SUPPORTED')
             print('CLOSE PREVIOUS OBD CONNECTION')
@@ -617,131 +776,6 @@ class DataManager(Thread):
             print(f'CONNECTED TO ECU')
             print(f'NUMBER OF COMMAND MONITORED:{self.command_list.__len__()}')
             print('START MONITORING ECU DATA')
-            self.running = True
-
-            if FILE_RECORDING:
-                if not os.path.exists(RECORD_DIRECTORY_LOCATION):
-                    os.makedirs(RECORD_DIRECTORY_LOCATION)
-                self.q = queue.Queue()
-                self.fileUpdateManager = FileUpdateManager(filename, self.q)
-                self.fileUpdateManager.start()
-                self.write_record_line_to_file(True)
-
-                while self.running:
-                    self.write_record_line_to_file(False)
-                    time.sleep(0.5)
-
-                self.fileUpdateManager.terminate()
-                self.fileUpdateManager.join()
-                print('CARLOG FILE CLOSED')
-
-            else:
-                while self.running:
-                    time.sleep(0.5)
-
-            self.obd_connection.stop()
-            self.obd_connection.unwatch_all()
-            print('CLOSE USED OBD CONNECTION')
-            self.obd_connection.close()
-
-    def write_record_line_to_file(self, write_header):
-        try:
-            self.q.put_nowait(self.get_command_record(write_header))
-        except queue.Full:
-            print('file queue full')
-
-    def terminate(self):
-        self.running = False
-
-    def query_command(self, string_command):
-        command = self.string_to_command_dict.get(string_command)
-        if command is None or not self.command_list.__contains__(command) or not self.running:
-            return None
-        return self.obd_connection.query(command)
-
-    def query_status(self, string_status):
-        status = self.string_to_status_dict.get(string_status)
-        if status is None or not self.running:
-            return None
-        return self.obd_connection.query(status)
-
-    def query_dtc(self):
-        if not self.running:
-            return None
-        return self.obd_connection.query(obd.commands.GET_DTC)
-
-    def clear_dtc(self):
-        if not self.running:
-            return None
-        return self.obd_connection.query(obd.commands.CLEAR_DTC)
-
-    def get_command_record(self, write_header):
-        if not self.running or write_header is None:
-            return None
-
-        if write_header:
-            ret = DEVICE_TIME_LABEL
-            for header in self.global_label_list:
-                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{header}'
-
-            for command in self.command_list:
-                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.command_to_string_header_dict.get(command)}'
-
-            if GPS_POSITION_MONITORING:
-                for gps_label in self.gps_data_label_list:
-                    ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{gps_label}'
-            return ret + '\n'
-        else:
-            ret = self.get_device_time_string()
-            for header in self.global_label_list:
-                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.get_global_value_for_header(header)}'
-
-            for command in self.command_list:
-                ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.obd_connection.query(command).value}'
-
-            if GPS_POSITION_MONITORING:
-                for gps_label in self.gps_data_label_list:
-                    ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.gnss_manager.get_data_for_header_name(gps_label)}'
-            return ret + '\n'
-
-    def get_command_list(self):
-        return [self.command_to_string_header_dict[command] for command in self.command_list]
-
-    def get_global_value_for_header(self, header):
-        switch = {
-            'CAR ID': self.car_id,
-            'TRIP ID': self.trip_id
-        }
-        return switch.get(header, None)
-
-    @staticmethod
-    def get_device_time_string():
-        return datetime.datetime.now().strftime(DATETIME_FORMAT)
-
-
-class MainManager(Thread):
-    running = False
-    gnss_manager = None
-    data_manager = None
-
-    def __init__(self):
-        super().__init__()
-
-    def run(self):
-        self.running = True
-        self.start_gnss_manager()
-        self.restart_data_manager()
-
-    def start_gnss_manager(self):
-        self.gnss_manager = GNSSManager()
-        self.gnss_manager.start()
-
-    def restart_data_manager(self):
-        if self.data_manager is not None:
-            self.data_manager.terminate()
-            self.data_manager.join()
-        self.data_manager = DataManager(self.gnss_manager, CAR_IDENTIFIER)
-        self.data_manager.start()
 
 
 if __name__ == '__main__':
