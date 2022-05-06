@@ -3,3 +3,4 @@ obd
 gps3
 configparser
 minio
+requests

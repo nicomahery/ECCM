@@ -12,6 +12,7 @@ import minio
 import platform
 import subprocess
 import time
+import requests
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -45,6 +46,9 @@ S3_SERVER_REGION = config.get('DEFAULT', 'S3_SERVER_REGION', fallback=None)
 ENABLE_SOCKET_SERVER = config['DEFAULT'].getboolean('ENABLE_SOCKET_SERVER', fallback=False)
 SOCKET_SERVER_PORT = config.getint('DEFAULT', 'SOCKET_SERVER_PORT', fallback=80)
 SOCKET_SERVER_SECRET = config['DEFAULT'].get('SOCKET_SERVER_SECRET', fallback=None)
+ECCM_SERVER_LOCATION = config['DEFAULT'].get('ECCM_SERVER_LOCATION', fallback=None)
+ECCM_SECRET_HEADER = config['DEFAULT'].get('ECCM_SECRET_HEADER', fallback=None)
+ECCM_SECRET_VALUE = config['DEFAULT'].get('ECCM_SECRET_VALUE', fallback=None)
 
 
 def ping(host):
@@ -149,16 +153,28 @@ class FileSyncManager(Thread):
             time.sleep(SECONDS_BETWEEN_PING)
             if retry_count % MESSAGE_RETRY_INTERVAL == 0:
                 print(f'S3 SERVER PING RETRY COUNT {retry_count}')
+        s3_file_location_list = []
         client = minio.Minio(endpoint=S3_SERVER_ENDPOINT, access_key=S3_SERVER_AK, secret_key=S3_SERVER_SK,
                              region=S3_SERVER_REGION)
         for filename in os.listdir(RECORD_DIRECTORY_LOCATION):
             if filename.endswith(MONITORING_FILE_EXTENSION) and filename != self.excluded_sync_filename:
-                client.fput_object(bucket_name=S3_SERVER_BUCKET,
-                                   object_name=f'{S3_ROOT_DIRECTORY}/{CAR_IDENTIFIER}/{filename}',
-                                   file_path=os.path.join(RECORD_DIRECTORY_LOCATION, filename)
-                                   )
-                os.remove(os.path.join(RECORD_DIRECTORY_LOCATION, filename))
-                print(f'FILE {filename} SYNCED TO S3')
+                try:
+                    result = client.fput_object(bucket_name=S3_SERVER_BUCKET,
+                                                object_name=f'{S3_ROOT_DIRECTORY}/{CAR_IDENTIFIER}/{filename}',
+                                                file_path=os.path.join(RECORD_DIRECTORY_LOCATION, filename)
+                                                )
+                    os.remove(os.path.join(RECORD_DIRECTORY_LOCATION, filename))
+                    print(f'FILE {filename} SYNCED TO S3')
+                    s3_file_location_list.append(result.object_name)
+                except Exception as exc:
+                    print(f'FILE {filename} SYNC FAILED')
+
+        if ECCM_SERVER_LOCATION is not None and ECCM_SECRET_VALUE is not None and ECCM_SECRET_HEADER is not None:
+            headers = {ECCM_SECRET_HEADER: ECCM_SECRET_VALUE, "Content-Type": "application/json; charset=utf-8"}
+            for location in s3_file_location_list:
+                data = {"objectLocation": location, "uploadDate": "2022-05-05T07:17:00"}
+                requests.post(ECCM_SERVER_LOCATION, headers=headers, json=data)
+
         print('FILE SYNC MANAGER ENDED')
         self.running = False
 
@@ -255,7 +271,8 @@ class DataManager(Thread):
     command_to_string_header_dict = None
     gps_data_label_list = None
 
-    def __init__(self, gnss_manager, car_id, obd_connection, command_list, string_to_command_dict, string_to_status_dict,
+    def __init__(self, gnss_manager, car_id, obd_connection, command_list, string_to_command_dict,
+                 string_to_status_dict,
                  global_label_list, command_to_string_header_dict, gps_data_label_list):
         super().__init__()
         self.car_id = car_id

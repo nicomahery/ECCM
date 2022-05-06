@@ -29,3 +29,9 @@ ENABLE_SOCKET_SERVER=no
 SOCKET_SERVER_PORT=
 # Secret used by the socket server (if activated) to authenticate the clients
 SOCKET_SERVER_SECRET=
+# Location of the ECCM server used to store to database
+ECCM_SERVER_LOCATION=
+# Header used for the secret of the ECCM server
+ECCM_SECRET_HEADER=
+# Value of the secret of the ECCM server
+ECCM_SECRET_VALUE=
