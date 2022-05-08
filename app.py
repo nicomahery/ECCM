@@ -13,19 +13,21 @@ import platform
 import subprocess
 import time
 import requests
+import logging
 
 config = configparser.ConfigParser()
 config.read('config.ini')
 DATETIME_FORMAT = "%Y%m%d%H%M%S%f"
 DEVICE_TIME_LABEL = 'DEVICE_TIME'
 S3_ROOT_DIRECTORY = 'car-logs'
+POST_TRIP_LOCATION = 'api/carloguploads/'
 SECONDS_BETWEEN_PING = 60
 MESSAGE_RETRY_INTERVAL = 50
 RECORD_DIRECTORY_LOCATION = config.get('DEFAULT', 'RECORD_DIRECTORY_LOCATION', fallback='.')
 CAR_IDENTIFIER = config.get('DEFAULT', 'CAR_IDENTIFIER', fallback=None)
 if CAR_IDENTIFIER is None:
-    print('NO CAR_IDENTIFIER FOUND')
-    print('SHUTDOWN PROGRAM')
+    logging.error('NO CAR_IDENTIFIER FOUND')
+    logging.info('SHUTDOWN PROGRAM')
     exit(0)
 OBD_INTERFACE = config.get('DEFAULT', 'OBD_INTERFACE', fallback=None)
 FILE_RECORDING = config['DEFAULT'].getboolean('FILE_RECORDING', fallback=False)
@@ -132,7 +134,7 @@ class SocketTCPHandler(socketserver.BaseRequestHandler):
                 if data == SOCKET_SERVER_SECRET:
                     self.authenticated = True
                 else:
-                    print('WRONG SECRET')
+                    logging.warning('WRONG SECRET')
                     break
 
 
@@ -147,12 +149,12 @@ class FileSyncManager(Thread):
     def run(self):
         self.running = True
         retry_count = 0
-        print('FILE SYNC MANAGER STARTED')
+        logging.info('FILE SYNC MANAGER STARTED')
         while not ping(S3_SERVER_ENDPOINT):
             retry_count = retry_count + 1
             time.sleep(SECONDS_BETWEEN_PING)
             if retry_count % MESSAGE_RETRY_INTERVAL == 0:
-                print(f'S3 SERVER PING RETRY COUNT {retry_count}')
+                logging.warning(f'S3 SERVER PING RETRY COUNT {retry_count}')
         s3_file_location_list = []
         client = minio.Minio(endpoint=S3_SERVER_ENDPOINT, access_key=S3_SERVER_AK, secret_key=S3_SERVER_SK,
                              region=S3_SERVER_REGION)
@@ -164,19 +166,38 @@ class FileSyncManager(Thread):
                                                 file_path=os.path.join(RECORD_DIRECTORY_LOCATION, filename)
                                                 )
                     os.remove(os.path.join(RECORD_DIRECTORY_LOCATION, filename))
-                    print(f'FILE {filename} SYNCED TO S3')
+                    logging.info(f'FILE {filename} SYNCED TO S3')
                     s3_file_location_list.append(result.object_name)
                 except Exception as exc:
-                    print(f'FILE {filename} SYNC FAILED')
-
+                    logging.error(f'FILE {filename} SYNC FAILED')
+                    logging.error(f'Error: {exc}')
+        thread_list = []
         if ECCM_SERVER_LOCATION is not None and ECCM_SECRET_VALUE is not None and ECCM_SECRET_HEADER is not None:
-            headers = {ECCM_SECRET_HEADER: ECCM_SECRET_VALUE, "Content-Type": "application/json; charset=utf-8"}
             for location in s3_file_location_list:
                 data = {"objectLocation": location, "uploadDate": "2022-05-05T07:17:00"}
-                requests.post(ECCM_SERVER_LOCATION, headers=headers, json=data)
+                thread = Thread(target=post_to_eccm_server, args=(POST_TRIP_LOCATION, data, location, ))
+                thread.start()
+                thread_list.append(thread)
 
-        print('FILE SYNC MANAGER ENDED')
+            for thread in thread_list:
+                thread.join()
+
+        logging.info('FILE SYNC MANAGER ENDED')
         self.running = False
+
+
+def post_to_eccm_server(url, data, location):
+    response = requests.Response()
+    while response.status_code != 200:
+        response = requests.post(f'{ECCM_SERVER_LOCATION}/{url}',
+                                 headers={ECCM_SECRET_HEADER: ECCM_SECRET_VALUE,
+                                          "Content-Type": "application/json; charset=utf-8"},
+                                 json=data)
+        if response.status_code != 200:
+            logging.warning(f'FILE {location} IMPORTATION FAILED RETRY IN 2.5 SECONDS')
+            time.sleep(2.5)
+
+    logging.info(f'FILE {location} IMPORTED INTO ECCM SERVER')
 
 
 class FileUpdateManager(Thread):
@@ -200,7 +221,7 @@ class FileUpdateManager(Thread):
                         file.write(self.q.get_nowait())
                         self.q.task_done()
                     except queue.Empty:
-                        print('file queue already empty')
+                        logging.info('file queue already empty')
 
                 file.close()
 
@@ -310,7 +331,7 @@ class DataManager(Thread):
 
             self.fileUpdateManager.terminate()
             self.fileUpdateManager.join()
-            print('CARLOG FILE CLOSED')
+            logging.info('CARLOG FILE CLOSED')
 
         else:
             while self.running:
@@ -320,7 +341,7 @@ class DataManager(Thread):
         try:
             self.q.put_nowait(self.get_command_record(write_header))
         except queue.Full:
-            print('file queue full')
+            logging.warning('file queue full')
 
     def terminate(self):
         self.running = False
@@ -700,7 +721,7 @@ class MainManager(Thread):
         if self.obd_connection is not None:
             self.restart_data_manager()
         else:
-            print('UNABLE TO HAVE OBD CONNECTION: NOT STARTING DATA MANAGER')
+            logging.error('UNABLE TO HAVE OBD CONNECTION: NOT STARTING DATA MANAGER')
 
     def start_gnss_manager(self):
         self.gnss_manager = GNSSManager()
@@ -729,59 +750,59 @@ class MainManager(Thread):
     def stop_obd_connection(self):
         self.obd_connection.stop()
         self.obd_connection.unwatch_all()
-        print('CLOSE USED OBD CONNECTION')
+        logging.info('CLOSE USED OBD CONNECTION')
         self.obd_connection.close()
 
     def start_obd_connection(self):
-        print('START NEW OBD CONNECTION')
+        logging.info('START NEW OBD CONNECTION')
         self.obd_connection = obd.Async(OBD_INTERFACE)
         time.sleep(2)
         wait_count = 1
 
         while self.obd_connection.status() == utils.OBDStatus.NOT_CONNECTED:
-            print('OBD NOT CONNECTED')
+            logging.warning('OBD NOT CONNECTED')
             if wait_count > 500:
                 self.obd_connection.close()
                 self.obd_connection = None
-                print('FAILED TO CREATE OBD CONNECTION')
+                logging.error('FAILED TO CREATE OBD CONNECTION')
                 return
-            print('RETRY CONNECTION N°' + str(wait_count))
+            logging.warning('RETRY CONNECTION N°' + str(wait_count))
             wait_count = wait_count + 1
             time.sleep(1)
 
             if not self.obd_connection.is_connected():
-                print('CLOSE PREVIOUS OBD CONNECTION')
+                logging.info('CLOSE PREVIOUS OBD CONNECTION')
                 self.obd_connection.close()
                 time.sleep(7)
-                print('RETRY STARTING NEW OBD CONNECTION')
+                logging.warning('RETRY STARTING NEW OBD CONNECTION')
                 self.obd_connection = obd.Async(OBD_INTERFACE)
                 time.sleep(2)
 
-        print('TESTING OBD CONNECTION')
-        print(str(self.obd_connection.supported_commands))
+        logging.info('TESTING OBD CONNECTION')
+        logging.info(str(self.obd_connection.supported_commands))
 
         for status in self.status_list:
-            print('TESTING OBD STATUS: ' + str(status))
+            logging.info('TESTING OBD STATUS: ' + str(status))
             status_supported = self.obd_connection.supports(status)
-            print(str(status_supported))
+            logging.info(str(status_supported))
 
             if not status_supported:
-                print('UNSUPPORTED OBD COMMAND: ' + str(status))
-                print(str(self.obd_connection.query(status, force=True).value))
+                logging.warning('UNSUPPORTED OBD COMMAND: ' + str(status))
+                logging.warning(str(self.obd_connection.query(status, force=True).value))
                 self.status_list.remove(status)
 
         for command in self.command_list:
-            print('TESTING OBD COMMAND: ' + str(command))
+            logging.info('TESTING OBD COMMAND: ' + str(command))
             command_supported = self.obd_connection.supports(command)
-            print(str(command_supported))
+            logging.info(str(command_supported))
             if not command_supported:
-                print('UNSUPPORTED OBD COMMAND: ' + str(command))
-                print(str(self.obd_connection.query(command, force=True).value))
+                logging.warning('UNSUPPORTED OBD COMMAND: ' + str(command))
+                logging.warning(str(self.obd_connection.query(command, force=True).value))
                 self.command_list.remove(command)
 
         if self.command_list.__len__() < 1:
-            print('NO OBD COMMAND SUPPORTED')
-            print('CLOSE PREVIOUS OBD CONNECTION')
+            logging.error('NO OBD COMMAND SUPPORTED')
+            logging.info('CLOSE PREVIOUS OBD CONNECTION')
             self.obd_connection.close()
         else:
             for command in self.command_list:
@@ -791,9 +812,9 @@ class MainManager(Thread):
                 self.obd_connection.watch(status)
 
             self.obd_connection.start()
-            print(f'CONNECTED TO ECU')
-            print(f'NUMBER OF COMMAND MONITORED:{self.command_list.__len__()}')
-            print('START MONITORING ECU DATA')
+            logging.info(f'CONNECTED TO ECU')
+            logging.info(f'NUMBER OF COMMAND MONITORED:{self.command_list.__len__()}')
+            logging.info('START MONITORING ECU DATA')
 
 
 if __name__ == '__main__':
