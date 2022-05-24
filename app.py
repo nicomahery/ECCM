@@ -92,10 +92,16 @@ class SocketTCPHandler(socketserver.BaseRequestHandler):
             return self.data_manager_not_available_message
         return self.server.main_manager.data_manager.clear_dtc()
 
-    def restart_data_manager(self):
+    def restart_data_manager(self, sync=False):
         if self.server.main_manager is None:
             return self.main_manager_not_available_message
-        self.server.main_manager.restart_data_manager()
+        self.server.main_manager.restart_data_manager(sync)
+        return 'RESTART IN PROGRESS'
+
+    def stop_data_manager(self, sync=False):
+        if self.server.main_manager is None:
+            return self.main_manager_not_available_message
+        self.server.main_manager.stop_data_manager(sync)
         return 'RESTART IN PROGRESS'
 
     def get_command_list(self):
@@ -125,7 +131,8 @@ class SocketTCPHandler(socketserver.BaseRequestHandler):
                     'QUERY_STATUS': self.query_status(parameter),
                     'GET_DTC': self.get_dtc(),
                     'CLEAR_DTC': self.clear_dtc(),
-                    'RESTART_DATA_MANAGER': self.restart_data_manager(),
+                    'STOP_DATA_MANAGER': self.stop_data_manager(sync=(parameter == 'SYNC')),
+                    'RESTART_DATA_MANAGER': self.restart_data_manager(sync=(parameter == 'SYNC')),
                     'GET_COMMAND_LIST': self.get_command_list()
                 }
 
@@ -142,7 +149,7 @@ class FileSyncManager(Thread):
     excluded_sync_filename = None
     running = False
 
-    def __init__(self, excluded_sync_filename):
+    def __init__(self, excluded_sync_filename=None):
         self.excluded_sync_filename = excluded_sync_filename
         super().__init__()
 
@@ -280,6 +287,7 @@ class DataManager(Thread):
     gnss_manager = None
     deviceTime = None
     running = False
+    sync_before_terminate = False
     header_line_written = False
     q = None
     fileUpdateManager = None
@@ -307,6 +315,7 @@ class DataManager(Thread):
         self.gps_data_label_list = gps_data_label_list
 
     def run(self):
+        file_sync_manager = None
         self.running = False
         self.trip_id = self.get_device_time_string()
         filename = os.path.join(RECORD_DIRECTORY_LOCATION, self.trip_id + MONITORING_FILE_EXTENSION)
@@ -331,6 +340,16 @@ class DataManager(Thread):
 
             self.fileUpdateManager.terminate()
             self.fileUpdateManager.join()
+
+            if self.sync_before_terminate and S3_SERVER_ENDPOINT is not None and S3_SERVER_AK is not None and \
+                    S3_SERVER_SK is not None and S3_SERVER_BUCKET is not None and S3_SERVER_REGION is not None:
+                if file_sync_manager is not None:
+                    file_sync_manager.join()
+
+                logging.info('START SYNC BEFORE DATA MANAGER SHUTDOWN')
+                file_sync_manager = FileSyncManager()
+                file_sync_manager.start()
+                file_sync_manager.join()
             logging.info('CARLOG FILE CLOSED')
 
         else:
@@ -343,7 +362,8 @@ class DataManager(Thread):
         except queue.Full:
             logging.warning('file queue full')
 
-    def terminate(self):
+    def terminate(self, sync):
+        self.sync_before_terminate = sync
         self.running = False
 
     def query_command(self, string_command):
@@ -727,21 +747,20 @@ class MainManager(Thread):
         self.gnss_manager = GNSSManager()
         self.gnss_manager.start()
 
-    def stop_data_manager(self):
-        self.data_manager.terminate()
+    def stop_data_manager(self, sync=False):
+        self.data_manager.terminate(sync)
         self.data_manager.join()
         self.data_manager = None
 
     def terminate(self):
         self.stop_data_manager()
-        self.data_manager.join()
         self.gnss_manager.terminate()
         self.gnss_manager.join()
         self.stop_obd_connection()
 
-    def restart_data_manager(self):
+    def restart_data_manager(self, sync=False):
         if self.data_manager is not None:
-            self.stop_data_manager()
+            self.stop_data_manager(sync)
         self.data_manager = DataManager(self.gnss_manager, CAR_IDENTIFIER, self.obd_connection, self.command_list,
                                         self.string_to_command_dict, self.string_to_status_dict, self.global_label_list,
                                         self.command_to_string_header_dict, self.gps_data_label_list)
