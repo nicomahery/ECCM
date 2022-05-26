@@ -15,6 +15,7 @@ import time
 import requests
 import logging
 import socketio
+from aiohttp import web
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -60,56 +61,79 @@ def ping(host):
     return subprocess.call(command) == 0
 
 
-class SocketTCPHandler(socketserver.BaseRequestHandler):
+class SocketServer:
+    main_manager = None
+    socket_io_server = None
     data_manager_not_available_message = 'DATA MANAGER NOT AVAILABLE'
     main_manager_not_available_message = 'MAIN MANAGER NOT AVAILABLE'
-    authenticated = (SOCKET_SERVER_SECRET is None)
 
-    """
-        The request handler class for our server.
+    def __init__(self, manager):
+        self.main_manager = manager
+        self.socket_io_server = socketio.AsyncServer()
+        app = web.Application()
+        self.socket_io_server.attach(app)
 
-        It is instantiated once per connection to the server, and must
-        override the handle() method to implement communication to the
-        client.
-        """
+        @self.socket_io_server.event
+        async def connect(sid, environ, auth):
+            print("connected ", sid)
+            print("auth", auth)
+            if not auth['secret'] == SOCKET_SERVER_SECRET:
+                await self.socket_io_server.disconnect(sid)
+
+        @self.socket_io_server.event
+        async def disconnect(sid):
+            print("disconnected ", sid)
+
+        @self.socket_io_server.event
+        async def query_command(sid, data):
+            response = self.query_command(data)
+            if response is not None:
+                response = response.value
+            return response
+
+        @self.socket_io_server.event
+        async def query_status(sid, data):
+            response = self.query_status(data)
+            if response is not None:
+                response = response.value
+            return response
+
+        @self.socket_io_server.event
+        async def get_dtc(sid, data):
+            response = self.get_dtc()
+            if response is not None:
+                response = response.value
+            return response
+
+        @self.socket_io_server.event
+        async def clear_dtc(sid, data):
+            self.clear_dtc()
+            return "OK"
+
+        web.run_app(app, host='0.0.0.0', port=SOCKET_SERVER_PORT)
 
     def query_command(self, command):
-        if self.server.main_manager is None or self.server.main_manager.data_manager is None:
-            return self.data_manager_not_available_message
-        return self.server.main_manager.data_manager.query_command(command)
+        return self.main_manager.query_command(command)
 
     def query_status(self, status_type):
-        if self.server.main_manager is None or self.server.main_manager.data_manager is None:
-            return self.data_manager_not_available_message
-        return self.server.main_manager.data_manager.query_status(status_type)
+        return self.main_manager.query_status(status_type)
 
     def get_dtc(self):
-        if self.server.main_manager is None or self.server.main_manager.data_manager is None:
-            return self.data_manager_not_available_message
-        return self.server.main_manager.data_manager.query_dtc()
+        return self.main_manager.query_dtc()
 
     def clear_dtc(self):
-        if self.server.main_manager is None or self.server.main_manager.data_manager is None:
-            return self.data_manager_not_available_message
-        return self.server.main_manager.data_manager.clear_dtc()
+        return self.main_manager.clear_dtc()
 
     def restart_data_manager(self, sync=False):
-        if self.server.main_manager is None:
-            return self.main_manager_not_available_message
-        self.server.main_manager.restart_data_manager(sync)
+        self.main_manager.restart_data_manager(sync)
         return 'RESTART IN PROGRESS'
 
     def stop_data_manager(self, sync=False):
-        if self.server.main_manager is None:
-            return self.main_manager_not_available_message
-        self.server.main_manager.stop_data_manager(sync)
+        self.main_manager.stop_data_manager(sync)
         return 'RESTART IN PROGRESS'
 
     def get_command_list(self):
-        if self.server.main_manager is None or self.server.main_manager.data_manager is None \
-                or not self.server.main_manager.data_manager.running:
-            return self.data_manager_not_available_message
-        return ','.join(self.server.main_manager.data_manager.get_command_list())
+        return ','.join(self.main_manager.get_command_list())
 
     def handle(self):
         # self.request is the TCP socket connected to the client
@@ -183,7 +207,7 @@ class FileSyncManager(Thread):
         if ECCM_SERVER_LOCATION is not None and ECCM_SECRET_VALUE is not None and ECCM_SECRET_HEADER is not None:
             for location in s3_file_location_list:
                 data = {"objectLocation": location, "uploadDate": "2022-05-05T07:17:00"}
-                thread = Thread(target=post_to_eccm_server, args=(POST_TRIP_LOCATION, data, location, ))
+                thread = Thread(target=post_to_eccm_server, args=(POST_TRIP_LOCATION, data, location,))
                 thread.start()
                 thread_list.append(thread)
 
@@ -385,28 +409,6 @@ class DataManager(Thread):
         self.sync_before_terminate = sync
         self.running = False
 
-    def query_command(self, string_command):
-        command = self.string_to_command_dict.get(string_command)
-        if command is None or not self.command_list.__contains__(command) or not self.running:
-            return None
-        return self.obd_connection.query(command)
-
-    def query_status(self, string_status):
-        status = self.string_to_status_dict.get(string_status)
-        if status is None or not self.running:
-            return None
-        return self.obd_connection.query(status)
-
-    def query_dtc(self):
-        if not self.running:
-            return None
-        return self.obd_connection.query(obd.commands.GET_DTC)
-
-    def clear_dtc(self):
-        if not self.running:
-            return None
-        return self.obd_connection.query(obd.commands.CLEAR_DTC)
-
     def get_command_record(self, write_header):
         if not self.running or write_header is None:
             return None
@@ -456,6 +458,7 @@ class MainManager(Thread):
     obd_connection = None
     gnss_manager = None
     data_manager = None
+    socket_server = None
 
     string_to_command_dict = {
         'ENGINE_LOAD': obd.commands.ENGINE_LOAD,
@@ -759,6 +762,8 @@ class MainManager(Thread):
         self.start_obd_connection()
         if self.obd_connection is not None:
             self.restart_data_manager()
+            if ENABLE_SOCKET_SERVER and SOCKET_SERVER_PORT is not None:
+                self.socket_server = SocketServer(self)
         else:
             logging.error('UNABLE TO HAVE OBD CONNECTION: NOT STARTING DATA MANAGER')
 
@@ -790,6 +795,24 @@ class MainManager(Thread):
         self.obd_connection.unwatch_all()
         logging.info('CLOSE USED OBD CONNECTION')
         self.obd_connection.close()
+
+    def query_command(self, string_command):
+        command = self.string_to_command_dict.get(string_command)
+        if command is None or not self.command_list.__contains__(command):
+            return None
+        return self.obd_connection.query(command)
+
+    def query_status(self, string_status):
+        status = self.string_to_status_dict.get(string_status)
+        if status is None:
+            return None
+        return self.obd_connection.query(status)
+
+    def query_dtc(self):
+        return self.obd_connection.query(obd.commands.GET_DTC)
+
+    def clear_dtc(self):
+        return self.obd_connection.query(obd.commands.CLEAR_DTC)
 
     def start_obd_connection(self):
         logging.info('START NEW OBD CONNECTION')
@@ -858,7 +881,3 @@ class MainManager(Thread):
 if __name__ == '__main__':
     main_manager = MainManager()
     main_manager.start()
-    if ENABLE_SOCKET_SERVER and SOCKET_SERVER_PORT is not None:
-        with socketserver.TCPServer((socket.gethostname(), SOCKET_SERVER_PORT), SocketTCPHandler) as server:
-            server.main_manager = main_manager
-            server.serve_forever()
