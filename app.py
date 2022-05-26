@@ -14,6 +14,7 @@ import subprocess
 import time
 import requests
 import logging
+import socketio
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -210,27 +211,45 @@ def post_to_eccm_server(url, data, location):
 class FileUpdateManager(Thread):
     filename = None
     running = False
+    first_line_written = False
+    header_overwritten = False
     q = None
+    header = None
 
-    def __init__(self, filename, q):
+    def __init__(self, filename, q, header):
         self.filename = filename
         self.q = q
+        self.header = header
         super().__init__()
 
     def run(self):
         self.running = True
         while self.running:
             time.sleep(2)
+            if self.first_line_written and not self.header_overwritten:
+                self.override_header()
+                self.header_overwritten = True
             if not self.q.qsize() == 0:
                 file = open(self.filename, 'a')
                 while not self.q.qsize() == 0:
                     try:
                         file.write(self.q.get_nowait())
                         self.q.task_done()
+                        if not self.first_line_written:
+                            self.first_line_written = True
+
                     except queue.Empty:
                         logging.info('file queue already empty')
 
                 file.close()
+
+    def override_header(self):
+        with open(self.filename, 'r+') as f:
+            if not f.readline().rstrip('\r\n') == self.header.rstrip('\r\n'):
+                f.seek(0, 0)
+                content = f.read()
+                f.seek(0, 0)
+                f.write(self.header.rstrip('\r\n') + '\n' + content)
 
     def terminate(self):
         self.running = False
@@ -330,7 +349,7 @@ class DataManager(Thread):
             if not os.path.exists(RECORD_DIRECTORY_LOCATION):
                 os.makedirs(RECORD_DIRECTORY_LOCATION)
             self.q = queue.Queue()
-            self.fileUpdateManager = FileUpdateManager(filename, self.q)
+            self.fileUpdateManager = FileUpdateManager(filename, self.q, self.get_command_record(True))
             self.fileUpdateManager.start()
             self.write_record_line_to_file(True)
 

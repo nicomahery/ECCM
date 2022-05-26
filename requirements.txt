@@ -4,3 +4,4 @@ gps3
 configparser
 minio
 requests
+python-socketio[asyncio_client]
