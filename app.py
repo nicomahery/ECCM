@@ -1,8 +1,6 @@
 import os.path
 from threading import Thread
 import queue
-import socket
-import socketserver
 import datetime
 import obd
 from obd import utils
@@ -134,40 +132,6 @@ class SocketServer:
 
     def get_command_list(self):
         return ','.join(self.main_manager.get_command_list())
-
-    def handle(self):
-        # self.request is the TCP socket connected to the client
-        while True:
-            self.data = self.request.recv(1024).decode()
-            command = None
-            parameter = None
-            if not self.data:
-                # if data is not received break
-                break
-            data = str(self.data)
-            print("{} wrote:{}".format(self.client_address[0], data))
-            if self.authenticated:
-                if data.__contains__('>>'):
-                    command, parameter = str(self.data).split('>>')
-                else:
-                    command = data
-                switch = {
-                    'QUERY_COMMAND': self.query_command(parameter),
-                    'QUERY_STATUS': self.query_status(parameter),
-                    'GET_DTC': self.get_dtc(),
-                    'CLEAR_DTC': self.clear_dtc(),
-                    'STOP_DATA_MANAGER': self.stop_data_manager(sync=(parameter == 'SYNC')),
-                    'RESTART_DATA_MANAGER': self.restart_data_manager(sync=(parameter == 'SYNC')),
-                    'GET_COMMAND_LIST': self.get_command_list()
-                }
-
-                self.request.sendall(str(switch.get(command, 'INVALID COMMAND')).encode())
-            else:
-                if data == SOCKET_SERVER_SECRET:
-                    self.authenticated = True
-                else:
-                    logging.warning('WRONG SECRET')
-                    break
 
 
 class FileSyncManager(Thread):
