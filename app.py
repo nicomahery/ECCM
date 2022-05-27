@@ -84,13 +84,21 @@ class SocketServer:
 
         @self.socket_io_server.event
         async def query_command(sid, data):
+            if data is None:
+                return "KO"
             response = self.query_command(data)
             if response is not None:
                 response = response.value
             return response
 
         @self.socket_io_server.event
+        async def supported_commands(sid, data):
+            return self.get_supported_commands()
+
+        @self.socket_io_server.event
         async def query_status(sid, data):
+            if data is None:
+                return "KO"
             response = self.query_status(data)
             if response is not None:
                 response = response.value
@@ -98,10 +106,7 @@ class SocketServer:
 
         @self.socket_io_server.event
         async def get_dtc(sid, data):
-            response = self.get_dtc()
-            if response is not None:
-                response = response.value
-            return response
+            return self.get_dtc()
 
         @self.socket_io_server.event
         async def clear_dtc(sid, data):
@@ -121,6 +126,9 @@ class SocketServer:
 
     def clear_dtc(self):
         return self.main_manager.clear_dtc()
+
+    def get_supported_commands(self):
+        return self.main_manager.get_supported_commands()
 
     def restart_data_manager(self, sync=False):
         self.main_manager.restart_data_manager(sync)
@@ -759,6 +767,12 @@ class MainManager(Thread):
         self.obd_connection.unwatch_all()
         logging.info('CLOSE USED OBD CONNECTION')
         self.obd_connection.close()
+
+    def get_supported_commands(self):
+        headers = []
+        for command in self.command_list:
+            headers.append(self.command_to_string_header_dict.get(command))
+        return headers
 
     def query_command(self, string_command):
         command = self.string_to_command_dict.get(string_command)
