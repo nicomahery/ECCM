@@ -74,8 +74,8 @@ class SocketServer:
         @self.socket_io_server.event
         async def connect(sid, environ, auth):
             print("connected ", sid)
-            print("auth", auth)
-            if not auth['secret'] == SOCKET_SERVER_SECRET:
+            if auth is None or type(auth) is not dict or 'secret' not in auth \
+                    or not auth['secret'] == SOCKET_SERVER_SECRET:
                 await self.socket_io_server.disconnect(sid)
 
         @self.socket_io_server.event
