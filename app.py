@@ -46,7 +46,7 @@ S3_SERVER_SK = config.get('DEFAULT', 'S3_SERVER_SK', fallback=None)
 S3_SERVER_BUCKET = config.get('DEFAULT', 'S3_SERVER_BUCKET', fallback=None)
 S3_SERVER_REGION = config.get('DEFAULT', 'S3_SERVER_REGION', fallback=None)
 ENABLE_SOCKET_SERVER = config['DEFAULT'].getboolean('ENABLE_SOCKET_SERVER', fallback=False)
-SOCKET_SERVER_PORT = config.getint('DEFAULT', 'SOCKET_SERVER_PORT', fallback=80)
+SOCKET_SERVER_PORT = config.getint('DEFAULT', 'SOCKET_SERVER_PORT', fallback=None)
 SOCKET_SERVER_SECRET = config['DEFAULT'].get('SOCKET_SERVER_SECRET', fallback=None)
 ECCM_SERVER_LOCATION = config['DEFAULT'].get('ECCM_SERVER_LOCATION', fallback=None)
 ECCM_SECRET_HEADER = config['DEFAULT'].get('ECCM_SECRET_HEADER', fallback=None)
@@ -94,6 +94,10 @@ class SocketServer:
         @self.socket_io_server.event
         async def supported_commands(sid, data):
             return self.get_supported_commands()
+
+        @self.socket_io_server.event
+        async def test(sid, data):
+            return "OK"
 
         @self.socket_io_server.event
         async def query_status(sid, data):
