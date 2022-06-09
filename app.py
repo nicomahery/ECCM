@@ -143,7 +143,10 @@ class SocketServer:
         return 'RESTART IN PROGRESS'
 
     def get_command_list(self):
-        return ','.join(self.main_manager.get_command_list())
+        if self.main_manager.data_manager is not None:
+            return ','.join(self.main_manager.data_manager.get_command_list())
+        else:
+            return None
 
 
 class FileSyncManager(Thread):
@@ -312,21 +315,20 @@ class DataManager(Thread):
     fileUpdateManager = None
     car_id = None
     trip_id = None
-    command_list = None
+    supported_command_list = None
     string_to_command_dict = None
     string_to_status_dict = None
     global_label_list = None
     command_to_string_header_dict = None
     gps_data_label_list = None
 
-    def __init__(self, gnss_manager, car_id, obd_connection, command_list, string_to_command_dict,
-                 string_to_status_dict,
-                 global_label_list, command_to_string_header_dict, gps_data_label_list):
+    def __init__(self, gnss_manager, car_id, obd_connection, supported_command_list, string_to_command_dict,
+                 string_to_status_dict, global_label_list, command_to_string_header_dict, gps_data_label_list):
         super().__init__()
         self.car_id = car_id
         self.gnss_manager = gnss_manager
         self.obd_connection = obd_connection
-        self.command_list = command_list
+        self.supported_command_list = supported_command_list
         self.string_to_command_dict = string_to_command_dict
         self.string_to_status_dict = string_to_status_dict
         self.global_label_list = global_label_list
@@ -394,7 +396,7 @@ class DataManager(Thread):
             for header in self.global_label_list:
                 ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{header}'
 
-            for command in self.command_list:
+            for command in self.supported_command_list:
                 ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.command_to_string_header_dict.get(command)}'
 
             if GPS_POSITION_MONITORING:
@@ -406,7 +408,7 @@ class DataManager(Thread):
             for header in self.global_label_list:
                 ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.get_global_value_for_header(header)}'
 
-            for command in self.command_list:
+            for command in self.supported_command_list:
                 ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.obd_connection.query(command).value}'
 
             if GPS_POSITION_MONITORING:
@@ -415,7 +417,10 @@ class DataManager(Thread):
             return ret + '\n'
 
     def get_command_list(self):
-        return [self.command_to_string_header_dict[command] for command in self.command_list]
+        if self.supported_command_list is not None:
+            return [self.command_to_string_header_dict[command] for command in self.supported_command_list]
+        else:
+            return None
 
     def get_global_value_for_header(self, header):
         switch = {
@@ -704,6 +709,8 @@ class MainManager(Thread):
                     obd.commands.FUEL_INJECT_TIMING,
                     obd.commands.FUEL_RATE]
 
+    supported_command_list = []
+
     gps_data_label_list = [
         'GPS LATITUDE (degree)',
         'GPS LONGITUDE (degree)',
@@ -729,6 +736,8 @@ class MainManager(Thread):
         obd.commands.AUX_INPUT_STATUS,
     ]
 
+    supported_status_list = []
+
     def __init__(self):
         super().__init__()
 
@@ -738,8 +747,6 @@ class MainManager(Thread):
         self.start_obd_connection()
         if self.obd_connection is not None:
             self.restart_data_manager()
-            if ENABLE_SOCKET_SERVER and SOCKET_SERVER_PORT is not None:
-                self.socket_server = SocketServer(self)
         else:
             logging.error('UNABLE TO HAVE OBD CONNECTION: NOT STARTING DATA MANAGER')
 
@@ -761,42 +768,52 @@ class MainManager(Thread):
     def restart_data_manager(self, sync=False):
         if self.data_manager is not None:
             self.stop_data_manager(sync)
-        self.data_manager = DataManager(self.gnss_manager, CAR_IDENTIFIER, self.obd_connection, self.command_list,
-                                        self.string_to_command_dict, self.string_to_status_dict, self.global_label_list,
+        self.data_manager = DataManager(self.gnss_manager, CAR_IDENTIFIER, self.obd_connection,
+                                        self.supported_command_list, self.string_to_command_dict,
+                                        self.string_to_status_dict, self.global_label_list,
                                         self.command_to_string_header_dict, self.gps_data_label_list)
         self.data_manager.start()
 
     def stop_obd_connection(self):
-        self.obd_connection.stop()
-        self.obd_connection.unwatch_all()
-        logging.info('CLOSE USED OBD CONNECTION')
-        self.obd_connection.close()
+        if self.obd_connection is not None:
+            self.obd_connection.stop()
+            self.obd_connection.unwatch_all()
+            logging.info('CLOSE USED OBD CONNECTION')
+            self.obd_connection.close()
 
     def get_supported_commands(self):
+        if self.obd_connection is None:
+            return None
         headers = []
-        for command in self.command_list:
+        for command in self.supported_command_list:
             headers.append(self.command_to_string_header_dict.get(command))
         return headers
 
     def query_command(self, string_command):
         command = self.string_to_command_dict.get(string_command)
-        if command is None or not self.command_list.__contains__(command):
+        if self.obd_connection is None or command is None or not self.supported_command_list.__contains__(command):
             return None
         return self.obd_connection.query(command)
 
     def query_status(self, string_status):
         status = self.string_to_status_dict.get(string_status)
-        if status is None:
+        if self.obd_connection is None or status is None:
             return None
         return self.obd_connection.query(status)
 
     def query_dtc(self):
+        if self.obd_connection is None:
+            return None
         return self.obd_connection.query(obd.commands.GET_DTC)
 
     def clear_dtc(self):
+        if self.obd_connection is None:
+            return None
         return self.obd_connection.query(obd.commands.CLEAR_DTC)
 
     def start_obd_connection(self):
+        self.supported_command_list = []
+        self.supported_status_list = []
         logging.info('START NEW OBD CONNECTION')
         self.obd_connection = obd.Async(OBD_INTERFACE)
         time.sleep(2)
@@ -827,39 +844,42 @@ class MainManager(Thread):
         for status in self.status_list:
             logging.info('TESTING OBD STATUS: ' + str(status))
             status_supported = self.obd_connection.supports(status)
-            logging.info(str(status_supported))
 
             if not status_supported:
-                logging.warning('UNSUPPORTED OBD COMMAND: ' + str(status))
+                logging.warning('UNSUPPORTED OBD STATUS: ' + str(status))
                 logging.warning(str(self.obd_connection.query(status, force=True).value))
-                self.status_list.remove(status)
+            else:
+                self.supported_status_list.append(status)
 
         for command in self.command_list:
             logging.info('TESTING OBD COMMAND: ' + str(command))
             command_supported = self.obd_connection.supports(command)
-            logging.info(str(command_supported))
+
             if not command_supported:
                 logging.warning('UNSUPPORTED OBD COMMAND: ' + str(command))
                 logging.warning(str(self.obd_connection.query(command, force=True).value))
-                self.command_list.remove(command)
+            else:
+                self.supported_command_list.append(command)
 
-        if self.command_list.__len__() < 1:
+        if self.supported_command_list.__len__() < 1:
             logging.error('NO OBD COMMAND SUPPORTED')
             logging.info('CLOSE PREVIOUS OBD CONNECTION')
             self.obd_connection.close()
         else:
-            for command in self.command_list:
+            for command in self.supported_command_list:
                 self.obd_connection.watch(command)  # , callback=self.value_callback)
 
-            for status in self.status_list:
+            for status in self.supported_status_list:
                 self.obd_connection.watch(status)
 
             self.obd_connection.start()
             logging.info(f'CONNECTED TO ECU')
-            logging.info(f'NUMBER OF COMMAND MONITORED:{self.command_list.__len__()}')
+            logging.info(f'NUMBER OF COMMAND MONITORED:{self.supported_command_list.__len__()}')
             logging.info('START MONITORING ECU DATA')
 
 
 if __name__ == '__main__':
     main_manager = MainManager()
     main_manager.start()
+    if ENABLE_SOCKET_SERVER and SOCKET_SERVER_PORT is not None:
+        socket_server = SocketServer(main_manager)
