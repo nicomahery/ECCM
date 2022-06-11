@@ -89,11 +89,11 @@ class SocketServer:
             response = self.query_command(data)
             if response is not None:
                 response = response.value
-            return response
+            return str(response)
 
         @self.socket_io_server.event
         async def supported_commands(sid, data):
-            return self.get_supported_commands()
+            return str(self.get_supported_commands())
 
         @self.socket_io_server.event
         async def test(sid, data):
@@ -106,11 +106,14 @@ class SocketServer:
             response = self.query_status(data)
             if response is not None:
                 response = response.value
-            return response
+            return str(response)
 
         @self.socket_io_server.event
         async def get_dtc(sid, data):
-            return self.get_dtc()
+            response = self.get_dtc()
+            if response is not None:
+                response = response.value
+            return str(response)
 
         @self.socket_io_server.event
         async def clear_dtc(sid, data):
