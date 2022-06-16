@@ -14,6 +14,7 @@ import requests
 import logging
 import socketio
 from aiohttp import web
+import asyncio
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -62,17 +63,16 @@ def ping(host):
 class SocketServer:
     main_manager = None
     socket_io_server = None
-    data_manager_not_available_message = 'DATA MANAGER NOT AVAILABLE'
-    main_manager_not_available_message = 'MAIN MANAGER NOT AVAILABLE'
+    app = None
 
     def __init__(self, manager):
         self.main_manager = manager
         self.socket_io_server = socketio.AsyncServer()
-        app = web.Application()
-        self.socket_io_server.attach(app)
+        self.app = web.Application()
+        self.socket_io_server.attach(self.app)
 
         @self.socket_io_server.event
-        async def connect(sid, environ, auth):
+        async def connect(sid, _, auth):
             print("connected ", sid)
             if auth is None or type(auth) is not dict or 'secret' not in auth \
                     or not auth['secret'] == SOCKET_SERVER_SECRET:
@@ -83,7 +83,7 @@ class SocketServer:
             print("disconnected ", sid)
 
         @self.socket_io_server.event
-        async def query_command(sid, data):
+        async def query_command(_, data):
             if data is None:
                 return "KO"
             response = self.query_command(data)
@@ -92,15 +92,15 @@ class SocketServer:
             return str(response)
 
         @self.socket_io_server.event
-        async def supported_commands(sid, data):
+        async def supported_commands(_, __):
             return str(self.get_supported_commands())
 
         @self.socket_io_server.event
-        async def test(sid, data):
+        async def test(_, __):
             return "OK"
 
         @self.socket_io_server.event
-        async def query_status(sid, data):
+        async def query_status(_, data):
             if data is None:
                 return "KO"
             response = self.query_status(data)
@@ -109,18 +109,19 @@ class SocketServer:
             return str(response)
 
         @self.socket_io_server.event
-        async def get_dtc(sid, data):
+        async def get_dtc(_, __):
             response = self.get_dtc()
             if response is not None:
                 response = response.value
             return str(response)
 
         @self.socket_io_server.event
-        async def clear_dtc(sid, data):
+        async def clear_dtc(_, __):
             self.clear_dtc()
             return "OK"
 
-        web.run_app(app, host='0.0.0.0', port=SOCKET_SERVER_PORT)
+    def start_server(self):
+        web.run_app(self.app, host='0.0.0.0', port=SOCKET_SERVER_PORT)
 
     def query_command(self, command):
         return self.main_manager.query_command(command)
@@ -151,17 +152,24 @@ class SocketServer:
         else:
             return None
 
+    async def emit(self, event, body):
+        await self.socket_io_server.emit(event=event, data=body)
+
 
 class FileSyncManager(Thread):
     excluded_sync_filename = None
     running = False
+    main_manager = None
 
-    def __init__(self, excluded_sync_filename=None):
+    def __init__(self, main_manager_, excluded_sync_filename=None):
+        self.main_manager = main_manager_
         self.excluded_sync_filename = excluded_sync_filename
         super().__init__()
 
     def run(self):
+        self.main_manager.set_sync_in_progress_info(True)
         self.running = True
+        export_failed_count = 0
         retry_count = 0
         logging.info('FILE SYNC MANAGER STARTED')
         while not ping(S3_SERVER_ENDPOINT):
@@ -185,6 +193,8 @@ class FileSyncManager(Thread):
                 except Exception as exc:
                     logging.error(f'FILE {filename} SYNC FAILED')
                     logging.error(f'Error: {exc}')
+                    export_failed_count = export_failed_count + 1
+
         thread_list = []
         if ECCM_SERVER_LOCATION is not None and ECCM_SECRET_VALUE is not None and ECCM_SECRET_HEADER is not None:
             for location in s3_file_location_list:
@@ -197,6 +207,8 @@ class FileSyncManager(Thread):
                 thread.join()
 
         logging.info('FILE SYNC MANAGER ENDED')
+        self.main_manager.set_last_sync_failed_error(export_failed_count > 0)
+        self.main_manager.set_sync_in_progress_info(False)
         self.running = False
 
 
@@ -324,19 +336,20 @@ class DataManager(Thread):
     global_label_list = None
     command_to_string_header_dict = None
     gps_data_label_list = None
+    main_manager = None
 
-    def __init__(self, gnss_manager, car_id, obd_connection, supported_command_list, string_to_command_dict,
-                 string_to_status_dict, global_label_list, command_to_string_header_dict, gps_data_label_list):
+    def __init__(self, main_manager_):
         super().__init__()
-        self.car_id = car_id
-        self.gnss_manager = gnss_manager
-        self.obd_connection = obd_connection
-        self.supported_command_list = supported_command_list
-        self.string_to_command_dict = string_to_command_dict
-        self.string_to_status_dict = string_to_status_dict
-        self.global_label_list = global_label_list
-        self.command_to_string_header_dict = command_to_string_header_dict
-        self.gps_data_label_list = gps_data_label_list
+        self.main_manager = main_manager_
+        self.car_id = CAR_IDENTIFIER
+        self.gnss_manager = main_manager_.gnss_manager
+        self.obd_connection = main_manager_.obd_connection
+        self.supported_command_list = main_manager_.supported_command_list
+        self.string_to_command_dict = main_manager_.string_to_command_dict
+        self.string_to_status_dict = main_manager_.string_to_status_dict
+        self.global_label_list = main_manager_.global_label_list
+        self.command_to_string_header_dict = main_manager_.command_to_string_header_dict
+        self.gps_data_label_list = main_manager_.gps_data_label_list
 
     def run(self):
         file_sync_manager = None
@@ -345,7 +358,7 @@ class DataManager(Thread):
         filename = os.path.join(RECORD_DIRECTORY_LOCATION, self.trip_id + MONITORING_FILE_EXTENSION)
         if S3_SERVER_ENDPOINT is not None and S3_SERVER_AK is not None and S3_SERVER_SK is not None \
                 and S3_SERVER_BUCKET is not None and S3_SERVER_REGION is not None:
-            file_sync_manager = FileSyncManager(excluded_sync_filename=filename)
+            file_sync_manager = FileSyncManager(main_manager, excluded_sync_filename=filename)
             file_sync_manager.start()
 
         self.running = True
@@ -357,6 +370,7 @@ class DataManager(Thread):
             self.fileUpdateManager = FileUpdateManager(filename, self.q, self.get_command_record(True))
             self.fileUpdateManager.start()
             self.write_record_line_to_file(True)
+            self.main_manager.set_recording_running_info(True)
 
             while self.running:
                 self.write_record_line_to_file(False)
@@ -371,10 +385,11 @@ class DataManager(Thread):
                     file_sync_manager.join()
 
                 logging.info('START SYNC BEFORE DATA MANAGER SHUTDOWN')
-                file_sync_manager = FileSyncManager()
+                file_sync_manager = FileSyncManager(self.main_manager)
                 file_sync_manager.start()
                 file_sync_manager.join()
             logging.info('CARLOG FILE CLOSED')
+            self.main_manager.set_recording_running_info(False)
 
         else:
             while self.running:
@@ -416,7 +431,8 @@ class DataManager(Thread):
 
             if GPS_POSITION_MONITORING:
                 for gps_label in self.gps_data_label_list:
-                    ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}{self.gnss_manager.get_data_for_header_name(gps_label)}'
+                    ret += f'{MONITORING_FILE_SEPARATION_CHARACTER}' + \
+                           f'{self.gnss_manager.get_data_for_header_name(gps_label)} '
             return ret + '\n'
 
     def get_command_list(self):
@@ -437,12 +453,50 @@ class DataManager(Thread):
         return datetime.datetime.now().strftime(DATETIME_FORMAT)
 
 
+class Status:
+    obd_connection_established_info = False
+    gnss_available_info = False
+    sync_in_progress_info = False
+    recording_running_info = False
+    last_sync_failed_error = False
+
+    def __init__(self):
+        super().__init__()
+
+    def generate_json(self):
+        errors = []
+        warnings = []
+        info = []
+
+        if self.obd_connection_established_info:
+            errors.append('OBD CONNECTION')
+
+        if GPS_POSITION_MONITORING and not self.gnss_available_info:
+            warnings.append('GNSS UNAVAIL.')
+
+        if FILE_RECORDING and not self.recording_running_info:
+            warnings.append('FILE RECORDING')
+
+        if S3_SERVER_ENDPOINT is not None:
+            if self.sync_in_progress_info:
+                warnings.append('SYNC IN PROGRESS')
+            if self.last_sync_failed_error:
+                errors.append('LAST SYNC FAILED')
+
+        return {
+            'errors': errors,
+            'warnings': warnings,
+            'info': info,
+        }
+
+
 class MainManager(Thread):
     running = False
     obd_connection = None
     gnss_manager = None
     data_manager = None
     socket_server = None
+    status = None
 
     string_to_command_dict = {
         'ENGINE_LOAD': obd.commands.ENGINE_LOAD,
@@ -742,6 +796,7 @@ class MainManager(Thread):
     supported_status_list = []
 
     def __init__(self):
+        self.status = Status()
         super().__init__()
 
     def run(self):
@@ -749,13 +804,16 @@ class MainManager(Thread):
         self.start_gnss_manager()
         self.start_obd_connection()
         if self.obd_connection is not None:
+            self.set_obd_connection_established_info(True)
             self.restart_data_manager()
         else:
             logging.error('UNABLE TO HAVE OBD CONNECTION: NOT STARTING DATA MANAGER')
+            self.set_obd_connection_established_info(False)
 
     def start_gnss_manager(self):
         self.gnss_manager = GNSSManager()
         self.gnss_manager.start()
+        self.set_gnss_available_info(True)
 
     def stop_data_manager(self, sync=False):
         self.data_manager.terminate(sync)
@@ -766,15 +824,13 @@ class MainManager(Thread):
         self.stop_data_manager()
         self.gnss_manager.terminate()
         self.gnss_manager.join()
+        self.set_gnss_available_info(False)
         self.stop_obd_connection()
 
     def restart_data_manager(self, sync=False):
         if self.data_manager is not None:
             self.stop_data_manager(sync)
-        self.data_manager = DataManager(self.gnss_manager, CAR_IDENTIFIER, self.obd_connection,
-                                        self.supported_command_list, self.string_to_command_dict,
-                                        self.string_to_status_dict, self.global_label_list,
-                                        self.command_to_string_header_dict, self.gps_data_label_list)
+        self.data_manager = DataManager(self)
         self.data_manager.start()
 
     def stop_obd_connection(self):
@@ -880,9 +936,40 @@ class MainManager(Thread):
             logging.info(f'NUMBER OF COMMAND MONITORED:{self.supported_command_list.__len__()}')
             logging.info('START MONITORING ECU DATA')
 
+    def broadcast_status(self):
+        if self.socket_server is not None:
+            asyncio.run(self.socket_server.emit('status', self.status.generate_json()))
+
+    def set_gnss_available_info(self, value):
+        self.status.gnss_available_info = value
+        self.broadcast_status()
+
+    def set_sync_in_progress_info(self, value):
+        self.status.sync_in_progress_info = value
+        self.broadcast_status()
+
+    def set_recording_running_info(self, value):
+        self.status.recording_running_info = value
+        self.broadcast_status()
+
+    def set_last_sync_failed_error(self, value):
+        self.status.last_sync_failed_error = value
+        self.broadcast_status()
+
+    def set_obd_connection_established_info(self, value):
+        self.status.last_sync_failed_error = value
+        self.broadcast_status()
+
 
 if __name__ == '__main__':
     main_manager = MainManager()
-    main_manager.start()
+    socket_server = None
+
     if ENABLE_SOCKET_SERVER and SOCKET_SERVER_PORT is not None:
         socket_server = SocketServer(main_manager)
+
+    main_manager.socket_server = socket_server
+    main_manager.start()
+
+    if socket_server is not None:
+        socket_server.start_server()
