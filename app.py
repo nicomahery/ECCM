@@ -116,9 +116,20 @@ class SocketServer:
             return str(response)
 
         @self.socket_io_server.event
+        async def sync_file(_, is_recording_restarted):
+            if is_recording_restarted:
+                self.main_manager.restart_data_manager(sync=True)
+            else:
+                self.main_manager.stop_data_manager(sync=True)
+
+        @self.socket_io_server.event
         async def clear_dtc(_, __):
             self.clear_dtc()
             return "OK"
+
+        @self.socket_io_server.event
+        async def query_last_status(_):
+            await self.emit('status', self.main_manager.status.generate_json())
 
     def start_server(self):
         web.run_app(self.app, host='0.0.0.0', port=SOCKET_SERVER_PORT)
@@ -469,13 +480,13 @@ class Status:
         info = []
 
         if self.obd_connection_established_info:
-            errors.append('OBD CONNECTION')
-
-        if GPS_POSITION_MONITORING and not self.gnss_available_info:
-            warnings.append('GNSS UNAVAIL.')
+            errors.append('OBD2 CONNECTION')
 
         if FILE_RECORDING and not self.recording_running_info:
             warnings.append('FILE RECORDING')
+
+        if GPS_POSITION_MONITORING and not self.gnss_available_info:
+            warnings.append('GNSS UNAVAIL.')
 
         if S3_SERVER_ENDPOINT is not None:
             if self.sync_in_progress_info:
@@ -492,6 +503,7 @@ class Status:
 
 class MainManager(Thread):
     running = False
+    data_manager_restart_in_progress = False
     obd_connection = None
     gnss_manager = None
     data_manager = None
@@ -816,22 +828,30 @@ class MainManager(Thread):
         self.set_gnss_available_info(True)
 
     def stop_data_manager(self, sync=False):
-        self.data_manager.terminate(sync)
-        self.data_manager.join()
-        self.data_manager = None
+        if not self.data_manager_restart_in_progress:
+            self.data_manager_restart_in_progress = True
+            if self.data_manager is not None:
+                self.data_manager.terminate(sync)
+                self.data_manager.join()
+                self.data_manager = None
+            self.data_manager_restart_in_progress = False
 
     def terminate(self):
         self.stop_data_manager()
-        self.gnss_manager.terminate()
-        self.gnss_manager.join()
+        if self.gnss_manager is not None:
+            self.gnss_manager.terminate()
+            self.gnss_manager.join()
         self.set_gnss_available_info(False)
         self.stop_obd_connection()
 
     def restart_data_manager(self, sync=False):
-        if self.data_manager is not None:
-            self.stop_data_manager(sync)
-        self.data_manager = DataManager(self)
-        self.data_manager.start()
+        if not self.data_manager_restart_in_progress:
+            self.data_manager_restart_in_progress = True
+            if self.data_manager is not None:
+                self.stop_data_manager(sync)
+            self.data_manager = DataManager(self)
+            self.data_manager.start()
+            self.data_manager_restart_in_progress = False
 
     def stop_obd_connection(self):
         if self.obd_connection is not None:
