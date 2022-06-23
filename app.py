@@ -504,6 +504,7 @@ class Status:
 class MainManager(Thread):
     running = False
     data_manager_restart_in_progress = False
+    data_manager_stop_in_progress = False
     obd_connection = None
     gnss_manager = None
     data_manager = None
@@ -828,13 +829,13 @@ class MainManager(Thread):
         self.set_gnss_available_info(True)
 
     def stop_data_manager(self, sync=False):
-        if not self.data_manager_restart_in_progress:
-            self.data_manager_restart_in_progress = True
+        if not self.data_manager_stop_in_progress:
+            self.data_manager_stop_in_progress = True
             if self.data_manager is not None:
                 self.data_manager.terminate(sync)
                 self.data_manager.join()
                 self.data_manager = None
-            self.data_manager_restart_in_progress = False
+            self.data_manager_stop_in_progress = False
 
     def terminate(self):
         self.stop_data_manager()
