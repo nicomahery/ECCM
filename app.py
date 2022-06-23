@@ -117,7 +117,7 @@ class SocketServer:
 
         @self.socket_io_server.event
         async def sync_file(_, is_recording_restarted):
-            if is_recording_restarted:
+            if str(is_recording_restarted) == 'true':
                 self.main_manager.restart_data_manager(sync=True)
             else:
                 self.main_manager.stop_data_manager(sync=True)
